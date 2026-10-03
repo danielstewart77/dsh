@@ -74,7 +74,15 @@ model goes unnoticed for weeks. Copy it to
 credential. `dsh` resolves every in-box bundle from its own installation, so
 only this package needs the link.
 
-The upstream monorepo has to be built first, both faces:
+This package is compiled by the host TypeScript project — it is a reference of
+`tsconfig.host.json`, and its `exports` point at that emit (`lib/types/*.js`)
+rather than at `src/*.ts`. Plain `node` cannot load a `.ts` entry, so a profile
+symlinking the source tree would die at its first import with
+`ERR_UNKNOWN_FILE_EXTENSION`. It is deliberately **not** in `tsdown`'s
+workspace list: a bundled `lib/index.js` buys nothing for a plugin that is only
+ever resolved from the tree it was built in.
+
+The monorepo has to be built first, both faces:
 
 ```sh
 ./node_modules/.bin/tsc -b tsconfig.host.json
