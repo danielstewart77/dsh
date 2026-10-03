@@ -112,6 +112,62 @@ function argumentNames(raw: string): string[] {
   }
 }
 
+/** One refused call, as the model spelled it and as the harness refused it. */
+export interface FailedCall {
+  /** The tool name the model asked for. */
+  name: string
+  /** The argument names it supplied. */
+  parameters: string[]
+  /** The code the tool refused it with. */
+  code: string
+  /** The error class the tool refused with, beside the code. */
+  errorName: string
+}
+
+/**
+ * The first refused call at or after `firstSeq`, if there is one.
+ *
+ * While the harness is being hardened, the first refusal is the whole result of
+ * a run: everything after it is the same model working around the same gap, and
+ * nothing in those rounds names a second dialect we do not already owe a tool.
+ * So a run can be stopped on it, which is why this is separate from the tally —
+ * the tally answers what a finished run did, and this answers whether to carry
+ * on at all.
+ * @param events - the session's durable events.
+ * @param firstSeq - the sequence number the owned interval starts at.
+ * @returns the call, or nothing while every result has come back clean.
+ */
+export function firstFailedCall(
+  events: readonly SessionEvent[], firstSeq: number,
+): FailedCall | undefined {
+  const outstanding = new Set<string>()
+  const calls = new Map<string, { name: string; parameters: string[] }>()
+  for (const event of events) {
+    if (event.seq < firstSeq) continue
+    if (event.type === 'tool/call') {
+      outstanding.add(String(event.data.callId))
+      calls.set(String(event.data.callId), {
+        name: event.data.name,
+        parameters: argumentNames(event.data.arguments),
+      })
+      continue
+    }
+    if (event.type !== 'tool/result') continue
+    const callId = resultCallId(event.data.message, outstanding)
+    outstanding.delete(callId)
+    const error = event.data.error
+    if (error === undefined) continue
+    const call = calls.get(callId)
+    return {
+      name: call?.name ?? 'unnamed',
+      parameters: call?.parameters ?? [],
+      code: error.code,
+      errorName: error.name,
+    }
+  }
+  return undefined
+}
+
 /** An empty tally, so a turn that emitted nothing reports zeroes rather than nothing. */
 export const NO_TRAFFIC: ToolTraffic = {
   emitted: 0,
