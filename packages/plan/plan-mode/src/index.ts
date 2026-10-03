@@ -321,8 +321,13 @@ export class PlanModeController extends Service {
       execute: async (args, exec) => {
         const agent = exec.agent
         if (agent === undefined) throw new Error(`${EXIT_PLAN_MODE} requires a calling agent (no session to switch)`)
+        // Not in plan mode is not a failed call: the model asked to leave a
+        // mode it is already outside of, and the state it wanted is the state
+        // it is in. Refusing costs it a tool call and tells it nothing it can
+        // act on, and a model whose training puts this call at the end of
+        // planning will make it in every session that never entered the mode.
         if (!foldPlanMode(agent.session.events)) {
-          throw new Error(`${EXIT_PLAN_MODE} is only available in plan mode`)
+          return { approved: true as const }
         }
         if (!/^#\s+\S/.test(args.plan.trim())) {
           throw new Error(`${EXIT_PLAN_MODE} requires a non-empty markdown plan starting with a # heading`)
