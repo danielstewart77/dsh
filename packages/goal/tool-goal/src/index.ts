@@ -5,6 +5,7 @@
  */
 
 import type { Context } from '@deepseek-ai/cordis'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import z from '@deepseek-ai/schemastery'
 import { GoalId } from '@deepseek-ai/dsh-goal'
 import type { GoalRef, GoalView } from '@deepseek-ai/dsh-goal'
@@ -113,8 +114,8 @@ const GOAL_VALUE_SCHEMA = {
 function guidance(blockedAfter: number): string {
   return 'Use goal tools for one long-running completion objective in the current session. '
     + 'create_goal may infer goal intent from a direct human request in any language; do not '
-    + 'create a goal for routine single-turn work. Call get_goal before update_goal and copy its '
-    + 'exact goal_id and revision. After session resume or fork, an active goal is disarmed: when '
+    + 'create a goal for routine single-turn work. update_goal needs only the goal_id; it updates '
+    + 'whatever the current revision is. After session resume or fork, an active goal is disarmed: when '
     + 'a human asks to continue or resume in any wording or language, use update_goal action '
     + 'resume to rearm it. Mark complete only when the objective is actually achieved. Mark '
     + `blocked only after the same blocking condition persists for at least ${blockedAfter} `
@@ -141,16 +142,20 @@ function hasRoundCap(value: number | undefined): value is number {
   return value !== undefined && value !== 0
 }
 
-/** Build the exact compare-and-set ref from model arguments. */
-function goalRef(goalId: string, revision: number): GoalRef {
-  if (goalId.length === 0 || goalId !== goalId.trim()
-    || !Number.isSafeInteger(revision) || revision < 1) {
-    throw new HarnessError(
-      'goal_id must be non-empty and revision must be a positive safe integer',
-      'GOAL_TOOL_INVALID_UPDATE',
-    )
+/** Build the compare-and-set ref the engine wants from the live goal's own revision.
+ *
+ * A session has one writer -- the model -- so a revision quoted back from an
+ * earlier `get_goal` guards against a conflict that cannot happen, and only
+ * ever refuses a legitimate second update in the same turn. The id is still
+ * the model's to name; the revision is read here. */
+function goalRef(ctx: Context, agent: Agent, goalId: string): GoalRef {
+  if (goalId.length === 0 || goalId !== goalId.trim()) {
+    throw new HarnessError('goal_id must be non-empty', 'GOAL_TOOL_INVALID_UPDATE')
   }
-  return { id: GoalId(goalId), revision }
+  // No goal at all is not this function's refusal to make: the authority check
+  // and the domain's own GOAL_NOT_FOUND both say it better, and both run later.
+  const current = ctx.goals.get(agent)
+  return { id: GoalId(goalId), revision: current?.revision ?? 1 }
 }
 
 /** Stable compact model result; activation is an observation, not replay state. */
@@ -233,13 +238,16 @@ export function apply(ctx: Context, config: Config): void {
 
   ctx.tools.register(defineTool({
     name: 'update_goal',
-    description: 'Update the exact current goal revision. edit, pause, and resume require a direct '
+    description: 'Update the current goal. edit, pause, and resume require a direct '
       + 'top-level human request. During an automatic continuation of the current goal, complete '
       + 'and blocked are also allowed. blocked is rejected before the configured minimum round count; the model remains '
       + 'responsible for judging that the same condition persisted across those rounds and must explain it in blocked_reason.',
     parameters: {
       goal_id: { type: 'string', required: true, description: 'Exact id returned by get_goal.' },
-      revision: { type: 'number', required: true, description: 'Exact positive revision returned by get_goal.' },
+      revision: {
+        type: 'number',
+        description: 'Accepted and ignored; the current revision is read here, so a stale one is no error.',
+      },
       action: {
         type: 'string',
         required: true,
@@ -256,7 +264,7 @@ export function apply(ctx: Context, config: Config): void {
     output: GOAL_OUTPUT,
     execute(args, exec) {
       const execution = goalToolExecution(ctx, exec)
-      const ref = goalRef(args.goal_id, args.revision)
+      const ref = goalRef(ctx, execution.agent, args.goal_id)
       const replacements = {
         ...hasText(args.objective) ? { objective: args.objective } : {},
         ...hasRoundCap(args.max_goal_rounds) ? { maxGoalRounds: args.max_goal_rounds } : {},
