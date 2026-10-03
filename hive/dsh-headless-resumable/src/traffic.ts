@@ -122,37 +122,61 @@ export interface FailedCall {
   code: string
   /** The error class the tool refused with, beside the code. */
   errorName: string
+  /** Whether the harness turned the call away, or a tool ran and failed. */
+  origin: FailureOrigin
+  /** What the failure said, which is usually the whole fix. */
+  message: string
 }
 
 /**
- * The codes that mean the harness refused a call it should have served: the
- * arguments did not satisfy the schema, or the model named a tool that is not
- * there. Both are dialect gaps — the model asked for something coherent in the
- * dialect it knows and got nothing back — and both are fixed by widening the
- * harness rather than by the model trying again.
+ * How much of a failure message rides in the run's single-line report. A tool
+ * that failed on a file can quote the file, and the report is one JSON line.
  */
-export const DIALECT_REFUSAL_CODES: readonly string[] = ['INVALID_ARGS', 'UNKNOWN_TOOL']
+export const MAX_FAILURE_MESSAGE = 400
+
+/** What a result's error said, trimmed to fit the run's single-line report. */
+function failureMessage(error: object): string {
+  const said = (error as { message?: unknown }).message
+  return typeof said === 'string' ? said.slice(0, MAX_FAILURE_MESSAGE) : ''
+}
 
 /**
- * The first dialect refusal at or after `firstSeq`, if there is one.
+ * The codes that mean the harness turned the call away before any tool ran: the
+ * arguments did not satisfy the schema, or the model named a tool that is not
+ * there. These classify a failure; they do not filter it. Everything is worth
+ * stopping on while the harness is being hardened, and the classification is
+ * what says where to look — `harness` means widen a schema or add a tool,
+ * `tool` means read what the tool actually said.
+ */
+export const HARNESS_REFUSAL_CODES: readonly string[] = ['INVALID_ARGS', 'UNKNOWN_TOOL']
+
+/** Where a failure came from: the harness turning a call away, or a tool that ran and failed. */
+export type FailureOrigin = 'harness' | 'tool'
+
+/** Which side a failure came from, by the code the result carried. */
+export function failureOrigin(code: string): FailureOrigin {
+  return HARNESS_REFUSAL_CODES.includes(code) ? 'harness' : 'tool'
+}
+
+/**
+ * The first failed call at or after `firstSeq`, if there is one.
  *
- * While the harness is being hardened, the first such refusal is the whole
- * result of a run: everything after it is the same model working around the
- * same gap. So a run can be stopped on it, which is why this is separate from
- * the tally — the tally answers what a finished run did, and this answers
- * whether to carry on at all.
+ * While the harness is being hardened, the first failure is the whole result of
+ * a run: everything after it is the same model working around the same gap, and
+ * a tool it asked for and did not get is a tool we owe it. So a run can be
+ * stopped on it, which is why this is separate from the tally — the tally
+ * answers what a finished run did, and this answers whether to carry on at all.
  *
- * An ordinary tool failure is not one of these and does not appear here. A file
- * that is not there, an edit string that does not match, a command that exited
- * non-zero: the tool did its job, the result is the answer, and the model
- * recovers from it in a turn. Stopping a forty-round build on one of those
- * throws away the run to report something the harness already handled
- * correctly.
+ * Every failure counts, not only the ones the harness refused outright. A
+ * `create` that wanted an empty file, a path spelled a second way, a command
+ * flag we never declared: each arrives as a tool failing at its job, and each is
+ * something to widen. Which side it came from is reported rather than used to
+ * decide — see {@link failureOrigin}.
  * @param events - the session's durable events.
  * @param firstSeq - the sequence number the owned interval starts at.
- * @returns the call, or nothing while no call has been refused this way.
+ * @returns the call, or nothing while every result has come back clean.
  */
-export function firstDialectRefusal(
+export function firstFailedCall(
   events: readonly SessionEvent[], firstSeq: number,
 ): FailedCall | undefined {
   const outstanding = new Set<string>()
@@ -172,13 +196,17 @@ export function firstDialectRefusal(
     outstanding.delete(callId)
     const error = event.data.error
     if (error === undefined) continue
-    if (!DIALECT_REFUSAL_CODES.includes(error.code)) continue
     const call = calls.get(callId)
     return {
       name: call?.name ?? 'unnamed',
       parameters: call?.parameters ?? [],
       code: error.code,
       errorName: error.name,
+      origin: failureOrigin(error.code),
+      // The session's error shape declares a name and a code; a message rides on
+      // it in practice and is the most useful part, so it is read defensively
+      // rather than demanded.
+      message: failureMessage(error),
     }
   }
   return undefined
