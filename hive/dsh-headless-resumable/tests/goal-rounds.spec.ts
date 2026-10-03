@@ -64,15 +64,22 @@ function spyGoals(current?: ReturnType<typeof view>): GoalDriving & { calls: str
  */
 function drivingGoals(objective: string, cap: number, completeAfterRounds: number): GoalDriving {
   let goal = view({ objective, maxGoalRounds: cap })
-  let agent: { followup(message: unknown): void } | undefined
   return {
     get: (live) => {
-      agent = live as never
-      if (goal.phase === 'active' && goal.activation === 'armed'
-        && goal.roundsStarted < goal.maxGoalRounds) {
+      const agent = live as unknown as {
+        session: { events: readonly { type: string }[] }
+        followup(message: unknown): void
+      }
+      // One round per completed turn, opened only at a genuine idle — the real
+      // driver reserves on the `agent/status` idle edge, and a stub that
+      // advanced on every read would make the runner's own loop look wrong.
+      const started = agent.session.events.filter(e => e.type === 'turn/start').length
+      const ended = agent.session.events.filter(e => e.type === 'turn/end').length
+      if (started === ended && goal.phase === 'active' && goal.activation === 'armed'
+        && goal.roundsStarted < goal.maxGoalRounds && goal.roundsStarted < ended) {
         goal = { ...goal, roundsStarted: goal.roundsStarted + 1 }
         if (goal.roundsStarted >= completeAfterRounds) goal = { ...goal, phase: 'complete' }
-        agent?.followup(createUserMessage({
+        agent.followup(createUserMessage({
           content: [{ type: 'text', text: `<goal_round>${goal.roundsStarted}</goal_round>` }],
           source: { kind: 'user' },
         }))
@@ -90,7 +97,7 @@ describe('a dispatch that asks for goal rounds', () => {
     const test = await bench()
     test.ctx.provide('goals', drivingGoals('build the app', 10, 3) as never)
 
-    const { report } = await test.run({
+    const { report, progress } = await test.run({
       task: 'build the app', sessionId: 'conv-goal', mode: 'create', goalRounds: 10,
     })
 
@@ -100,6 +107,13 @@ describe('a dispatch that asks for goal rounds', () => {
     expect(report.goalPhase).toBe('complete')
     // Every round's tool call is in one tally, which is the measurement.
     expect(report.traffic.emitted).toBe(report.turns)
+    // And a round crossed stdout while the build was still running, which is
+    // what keeps the gateway's socket from reading an hour-long build as a dead
+    // mind. The exact count is the driver's business, not the runner's.
+    expect(progress.length).toBeGreaterThan(0)
+    // Each line is a snapshot taken mid-build, so it trails the final figures
+    // rather than matching them.
+    expect(progress.every(p => p.round >= 1 && p.turns <= report.turns)).toBe(true)
     await test.ctx.fiber.dispose()
   })
 
@@ -234,5 +248,37 @@ describe('the round cap on the command line', () => {
     const values = resolveInvocation(['build it'], { sessionId: 'abc', goalRounds: '40' })
 
     expect(values.goalRounds).toBe(40)
+  })
+})
+
+describe('what the goal repeats every round', () => {
+  it('is the request, not the composed prompt the conversation opened with', () => {
+    // The driver quotes the objective into every round prompt. A goal armed
+    // with the opening task carries the whole soul and system prompt, so forty
+    // rounds spend the context window on forty copies of it.
+    const values = resolveInvocation([], {
+      sessionId: 'abc',
+      taskFile: 'task',
+      goalRounds: '40',
+      goalObjectiveFile: 'objective',
+    }, path => (path === 'task' ? '<soul>...</soul>\n\n---\n\nbuild the app' : 'build the app'))
+
+    expect(values.goalObjective).toBe('build the app')
+    expect(values.task).toContain('<soul>')
+  })
+
+  it('falls back to the task when no separate objective was given', () => {
+    const values = resolveInvocation(['build it'], { sessionId: 'abc', goalRounds: '9' })
+    const goals = spyGoals(undefined)
+
+    armGoal(goals, undefined as never, values.goalObjective ?? values.task, 9)
+
+    expect(goals.calls).toEqual(['create:build it:9'])
+  })
+
+  it('refuses an objective file it cannot read rather than arming with the blob', () => {
+    expect(() => resolveInvocation(['build it'], {
+      sessionId: 'abc', goalRounds: '9', goalObjectiveFile: 'gone',
+    }, () => { throw new Error('ENOENT') })).toThrow(UsageError)
   })
 })

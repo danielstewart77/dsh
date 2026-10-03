@@ -45,3 +45,5 @@
         task: !!js ctx.resumableHeadlessStartup.task
         sessionId: !!js ctx.resumableHeadlessStartup.sessionId
         mode: !!js ctx.resumableHeadlessStartup.mode
+        goalRounds: !!js ctx.resumableHeadlessStartup.goalRounds
+        goalObjective: !!js ctx.resumableHeadlessStartup.goalObjective

@@ -1,5 +1,7 @@
 /** The invocation's own validity: one conversation, one task, no inventing either. */
 
+import { readFileSync } from 'node:fs'
+
 import { describe, expect, it } from 'vitest'
 
 import { resolveInvocation, UsageError } from '../src/startup.ts'
@@ -45,5 +47,24 @@ describe('resolving an invocation', () => {
     expect(() => resolveInvocation([], { resume: 'conv-1', taskFile: '/tmp/gone.txt' }, () => {
       throw new Error('ENOENT')
     })).toThrow(UsageError)
+  })
+})
+
+describe('the bundle patch that hands startup values to the runner', () => {
+  it('maps every value the startup provider resolves, so none is silently dropped', () => {
+    // The gap this guards is invisible to every other test here: the runner's
+    // own tests construct its config directly, so a field present on the
+    // provider and absent from this YAML type-checks, passes, and reaches the
+    // runner as undefined — a flag parsed off the command line and then
+    // quietly ignored.
+    const patch = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8')
+    const mapped = [...patch.matchAll(/ctx\.resumableHeadlessStartup\.(\w+)/g)].map(m => m[1])
+    // Every option supplied, so every field the provider can carry is present:
+    // a field that only materializes sometimes is exactly the one a patch drops.
+    const resolved = Object.keys(resolveInvocation([], {
+      sessionId: 'abc', taskFile: 'task', goalRounds: '40', goalObjectiveFile: 'objective',
+    }, () => 'text'))
+
+    expect([...mapped].sort()).toEqual([...resolved].sort())
   })
 })

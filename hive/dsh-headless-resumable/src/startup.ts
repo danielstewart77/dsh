@@ -56,6 +56,16 @@ export interface ResumableStartupValues {
    * evidence of completion or the cap runs out.
    */
   goalRounds?: number
+  /**
+   * The objective a goal is armed with, when it differs from the task.
+   *
+   * The task a conversation opens with is the composed system prompt and the
+   * user's message together, tens of thousands of characters. The round driver
+   * quotes the objective into every round prompt, so arming a goal with that
+   * whole blob spends the context window on forty copies of a soul. The
+   * objective is the user's own request alone.
+   */
+  goalObjective?: string
 }
 
 /**
@@ -73,6 +83,7 @@ export function resumableCommand(): Command {
     .option('--resume <id>', 'continue the conversation already persisted under this id')
     .option('--task-file <path>', 'read the task from this file instead of the positional')
     .option('--goal-rounds <n>', 'drive the task as a goal for up to this many rounds (default: one turn)')
+    .option('--goal-objective-file <path>', 'read the goal objective from this file (default: the task)')
     .addHelpText('after', `
 Examples:
   dsh --profile hive --session-id abc "build the app"   open conversation abc
@@ -118,7 +129,10 @@ export class UsageError extends Error {}
  */
 export function resolveInvocation(
   words: readonly string[],
-  options: { sessionId?: string; resume?: string; taskFile?: string; goalRounds?: string },
+  options: {
+    sessionId?: string; resume?: string; taskFile?: string
+    goalRounds?: string; goalObjectiveFile?: string
+  },
   readTask: (path: string) => string = path => readFileSync(path, 'utf8'),
 ): ResumableStartupValues {
   const positional = words.join(' ')
@@ -152,10 +166,28 @@ export function resolveInvocation(
     throw new UsageError('a conversation id is required; this process does not mint one')
   }
   const goalRounds = resolveGoalRounds(options.goalRounds)
+  const objectiveFile = options.goalObjectiveFile?.trim() ?? ''
+  let goalObjective = ''
+  if (objectiveFile !== '') {
+    try {
+      goalObjective = readTask(objectiveFile).trim()
+    } catch (error: unknown) {
+      throw new UsageError(
+        `--goal-objective-file ${objectiveFile} could not be read: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+    if (goalObjective === '') {
+      throw new UsageError(`--goal-objective-file ${objectiveFile} holds no objective`)
+    }
+  }
   const identity = resumed !== ''
     ? { task, sessionId: resumed, mode: 'resume' as const }
     : { task, sessionId: created, mode: 'create' as const }
-  return goalRounds === undefined ? identity : { ...identity, goalRounds }
+  if (goalRounds === undefined) return identity
+  return goalObjective === ''
+    ? { ...identity, goalRounds }
+    : { ...identity, goalRounds, goalObjective }
 }
 
 /**

@@ -64,6 +64,8 @@ export interface Config {
   mode: SessionMode
   /** Round cap when this dispatch wants the task driven as a goal. */
   goalRounds?: number
+  /** The goal's objective, when the composed task is not what to repeat. */
+  goalObjective?: string
 }
 
 export const Config: z<Config> = z.object({
@@ -71,6 +73,7 @@ export const Config: z<Config> = z.object({
   sessionId: z.string().required(),
   mode: z.union(['create', 'resume'] as const).required(),
   goalRounds: z.number(),
+  goalObjective: z.string(),
 })
 
 /** What the adapter reads off stdout: one line of JSON, whatever happened. */
@@ -228,6 +231,26 @@ export async function waitForRound(
   return false
 }
 
+/**
+ * One line of stdout per completed goal round, so a long dispatch is observable
+ * while it runs.
+ *
+ * A goal-driven dispatch is one HTTP response that can last an hour, and the
+ * gateway caps the socket on time since the last byte rather than on total
+ * elapsed. A process that writes nothing until the end is therefore read as a
+ * mind that stopped answering, and the turn is lost even though the work is
+ * still going. It carries no `sessionId`: that field is what identifies the
+ * report, and a progress line mistaken for one would end the turn early.
+ * @param io - process-facing effects.
+ * @param progress - the round just finished and the traffic so far.
+ */
+export function reportProgress(
+  io: Pick<RunnerIo, 'stdout'>,
+  progress: { round: number; turns: number; toolCalls: number },
+): void {
+  io.stdout.write(JSON.stringify({ progress }) + '\n')
+}
+
 /** Write one report and request the matching exit. A completed turn is the only zero. */
 export function report(io: RunnerIo, turn: TurnReport): void {
   io.stdout.write(JSON.stringify(turn) + '\n')
@@ -338,7 +361,7 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
     // Armed before the task is submitted, so the human message is already in
     // the inbox when the driver first looks: it yields to human work, and the
     // task therefore opens the conversation rather than racing a goal round.
-    armGoal(goals, agent as never, config.task, rounds)
+    armGoal(goals, agent as never, config.goalObjective ?? config.task, rounds)
   }
   agent.followup(createUserMessage({
     content: [{ type: 'text', text: config.task }],
@@ -355,6 +378,12 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
       if (!continuing(goal)) break
       if (!await waitForRound(goals, agent as never, goal?.roundsStarted ?? 0)) break
       await agent.whenIdle()
+      const sofar = summarize(agent.session.events, firstSeq)
+      reportProgress(io, {
+        round: goals.get(agent as never)?.roundsStarted ?? 0,
+        turns: sofar.turns,
+        toolCalls: toolTraffic(agent.session.events, firstSeq).emitted,
+      })
     }
   }
   await sessions.flush(agent.session)

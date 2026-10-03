@@ -136,7 +136,12 @@ export async function bench(script: Script = ordinaryTurn): Promise<{
       // The process would have ended here, taking its agent with it.
       for (const handle of live.splice(0)) await handle.dispose()
       if (out === '') throw new Error(`no report written; exit ${code}; stderr ${err}`)
-      return { code, report: JSON.parse(out) as TurnReport, err }
+      // Progress lines precede the report on a goal-driven dispatch; the report
+      // is the last line, the way the adapter reads it.
+      const written = out.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
+      const progress = written.filter(line => line['progress'] !== undefined)
+        .map(line => line['progress'] as { round: number; turns: number; toolCalls: number })
+      return { code, report: written[written.length - 1] as unknown as TurnReport, progress, err }
     },
   }
 }
