@@ -34,14 +34,16 @@ was a surface exposing them. This is that surface, and nothing else.
   rewrite the history of a run we are measuring. The model-free tool-result
   pruner stays on.
 
-## Why it lives in this checkout
+## Where it lives
 
-It is meant to be out-of-tree, and it is — its own git repository, its own
-package, no patch to any upstream file but one line in `pnpm-workspace.yaml`.
-It sits *inside* the upstream checkout only because the npm-published
-`@deepseek-ai` set cannot be installed on its own: `dsh-agent@0.1.0-rc.6` needs
-`dsh-invariants@^0.1.0-rc.6` and the published invariants is `0.0.1-rc.1`. The
-workspace is the only place those specifiers resolve.
+In the tree, at `hive/dsh-headless-resumable`, a workspace member named in
+`pnpm-workspace.yaml`. This harness is maintained independently of the
+DeepSeek developer preview it was forked from, so there is no upstream to stay
+out of the way of and nothing is gained by keeping the surface at arm's length.
+
+A published copy of this one package lives at
+`github.com/danielstewart77/dsh-headless-resumable`, MIT, for anyone running
+the preview itself. The tree here is the working copy.
 
 ## Tests
 
