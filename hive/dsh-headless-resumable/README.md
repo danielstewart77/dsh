@@ -63,7 +63,12 @@ The tests run the module in-process. This runs it the way a mind will: the real
 
 `profile/` is that profile — `package.json` naming the two bundle layers
 (`@deepseek-ai/dsh-base`, then this package) and `cordis.patch.yml` pointing the
-model seam at this host's inference proxy. Copy it to
+model seam at this host's inference proxy. Nothing in it is defaulted: the
+model, its provider route, that route's endpoint and the model's context window
+all come from the spawn's environment (`DSH_MODEL`, `DSH_PROVIDER`,
+`DSH_PROXY_BASE_URL`, `DSH_MODEL_CONTEXT_WINDOW`), because the gateway resolves
+the model per session and a profile holding a house favourite is how a wrong
+model goes unnoticed for weeks. Copy it to
 `$DSH_HOME/profiles/hive/`, symlink this package into the profile's
 `node_modules/@hive/`, and export `HIVE_PROXY_KEY` with the mind's proxy
 credential. `dsh` resolves every in-box bundle from its own installation, so
@@ -85,6 +90,9 @@ mounts `dsh-api-gateway`, whose `lib/index.js` is emitted by the client face.
 
 What it shows, on `qwen35-131k` through the proxy:
 
+- `--task-file <path>` carries a turn argv cannot: a composed system prompt
+  plus a user message runs past `MAX_ARG_STRLEN` (128 KiB), which is a limit on
+  one argv entry regardless of total command-line room.
 - `--session-id <id> "..."` answers in the id it was handed and reports
   `{"mode":"create","outcome":"completed"}`.
 - `--resume <id> "..."` in a **separate process** answers from the first

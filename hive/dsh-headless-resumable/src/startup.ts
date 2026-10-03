@@ -6,6 +6,12 @@
  * the two ways of supplying it mean different things, because the hive mints
  * conversation ids outside this process and hands one to every spawn.
  *
+ * The task itself may arrive as the positional or, when it is too large for
+ * argv to carry, as `--task-file <path>`: a composed system prompt plus a
+ * user message runs to tens of thousands of characters, and Linux caps one
+ * argv entry at `MAX_ARG_STRLEN` (128 KiB) regardless of how much room the
+ * whole command line has.
+ *
  * `--session-id <id>` is the conversation's first process: create the session
  * under that id. `--resume <id>` is every process after it: continue the
  * session already persisted under that id. Neither is a fallback for the other.
@@ -15,6 +21,8 @@
  *
  * @module @hive/dsh-headless-resumable/startup
  */
+
+import { readFileSync } from 'node:fs'
 
 import { Command } from 'commander'
 import type { Context } from '@deepseek-ai/cordis'
@@ -55,10 +63,12 @@ export function resumableCommand(): Command {
     .argument('[task...]', 'the task text; multiple words are joined by spaces')
     .option('--session-id <id>', 'create the conversation under this id (its first process)')
     .option('--resume <id>', 'continue the conversation already persisted under this id')
+    .option('--task-file <path>', 'read the task from this file instead of the positional')
     .addHelpText('after', `
 Examples:
   dsh --profile hive --session-id abc "build the app"   open conversation abc
   dsh --profile hive --resume abc "now fix the chart"   continue conversation abc
+  dsh --profile hive --resume abc --task-file turn.txt  a task argv cannot carry
 `)
 }
 
@@ -73,14 +83,34 @@ export class UsageError extends Error {}
  * an id that is only whitespace.
  * @param words - the task positional, already split into words.
  * @param options - the parsed flags.
+ * @param readTask - reads `--task-file`; defaults to the filesystem.
  * @returns the task and the conversation identity.
  * @throws UsageError when the invocation cannot name one conversation and one task.
  */
 export function resolveInvocation(
   words: readonly string[],
-  options: { sessionId?: string; resume?: string },
+  options: { sessionId?: string; resume?: string; taskFile?: string },
+  readTask: (path: string) => string = path => readFileSync(path, 'utf8'),
 ): ResumableStartupValues {
-  const task = words.join(' ')
+  const positional = words.join(' ')
+  const taskFile = options.taskFile?.trim() ?? ''
+  if (taskFile !== '' && positional.trim() !== '') {
+    throw new UsageError('name the task once: either the positional or --task-file, not both')
+  }
+  let task = positional
+  if (taskFile !== '') {
+    try {
+      task = readTask(taskFile)
+    } catch (error: unknown) {
+      // A task we cannot read is not an empty task. Running the turn on ''
+      // would spend a model request to answer nothing and report it as a
+      // completed turn, which in a measured run is worse than a refusal.
+      throw new UsageError(
+        `--task-file ${taskFile} could not be read: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
   const created = options.sessionId?.trim() ?? ''
   const resumed = options.resume?.trim() ?? ''
   if (task.trim() === '') {

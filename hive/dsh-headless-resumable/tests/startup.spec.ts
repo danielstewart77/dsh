@@ -28,4 +28,22 @@ describe('resolving an invocation', () => {
     expect(() => resolveInvocation([], { resume: 'conv-1' })).toThrow(UsageError)
     expect(() => resolveInvocation(['   '], { resume: 'conv-1' })).toThrow(UsageError)
   })
+
+  it('takes the task from a file, for a turn too large for argv to carry', () => {
+    const turn = 'x'.repeat(200_000)
+    expect(resolveInvocation([], { resume: 'conv-1', taskFile: '/tmp/turn.txt' },
+      path => (path === '/tmp/turn.txt' ? turn : 'wrong file')))
+      .toEqual({ task: turn, sessionId: 'conv-1', mode: 'resume' })
+  })
+
+  it('refuses a task named twice', () => {
+    expect(() => resolveInvocation(['inline'], { resume: 'conv-1', taskFile: '/tmp/turn.txt' },
+      () => 'from the file')).toThrow(UsageError)
+  })
+
+  it('refuses a task file it cannot read, rather than running an empty turn', () => {
+    expect(() => resolveInvocation([], { resume: 'conv-1', taskFile: '/tmp/gone.txt' }, () => {
+      throw new Error('ENOENT')
+    })).toThrow(UsageError)
+  })
 })

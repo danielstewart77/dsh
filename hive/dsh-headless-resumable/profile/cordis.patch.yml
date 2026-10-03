@@ -1,9 +1,14 @@
-# The proof profile: the hive bundle over dsh-base, pointed at this host's
-# inference proxy so a turn reaches a real model and persists real history.
+# The hive profile: the hive bundle over dsh-base, with the model, its provider
+# route and that route's endpoint all read from the spawn's environment.
+#
+# Nothing here is defaulted. The gateway resolves the model per session from the
+# mind's broker row and the adapter puts it on the spawn; a profile holding a
+# house favourite is how a wrong model goes unnoticed for weeks. An unset value
+# fails the boot rather than substituting one.
 - id: agent-default-model
   config:
-    provider: hive-proxy
-    model: qwen35-131k
+    provider: !!js process.env.DSH_PROVIDER
+    model: !!js process.env.DSH_MODEL
 
 - id: llm-pi-ai
   config:
@@ -12,8 +17,7 @@
         displayName: Hive inference proxy
         apiKeyEnv: HIVE_PROXY_KEY
         api: openai-completions
-        baseURL: http://127.0.0.1:8899/v1
+        baseURL: !!js process.env.DSH_PROXY_BASE_URL
         models:
-          - id: qwen35-131k
-            name: Qwen 3.5 (local, via proxy)
-            contextWindow: 131072
+          - id: !!js process.env.DSH_MODEL
+            contextWindow: !!js Number(process.env.DSH_MODEL_CONTEXT_WINDOW)
