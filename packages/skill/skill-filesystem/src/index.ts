@@ -690,10 +690,15 @@ function containedSegments(root: string, path: string): string[] | undefined {
   return child.split(sep)
 }
 
-function mutationToolName(actor: object | undefined): 'edit' | 'write' | undefined {
+// `str_replace` is the same literal-edit body as `edit` under the name a
+// Claude-trained model reaches for, so a skill edited through it must poke the
+// watcher too — otherwise the harness goes on serving the pre-edit skill.
+const MUTATION_TOOL_NAMES: ReadonlySet<string> = new Set(['edit', 'str_replace', 'write'])
+
+function mutationToolName(actor: object | undefined): string | undefined {
   if (actor === undefined || !('name' in actor)) return undefined
   const value = actor.name
-  return value === 'edit' || value === 'write' ? value : undefined
+  return typeof value === 'string' && MUTATION_TOOL_NAMES.has(value) ? value : undefined
 }
 
 function assertPositiveInteger(field: string, value: number): void {

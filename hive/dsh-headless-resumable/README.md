@@ -29,10 +29,11 @@ was a surface exposing them. This is that surface, and nothing else.
   conversation that is not there, it refuses instead of creating one: creating
   one would answer in a conversation with no history and leave the one that was
   meant untouched and unfindable.
-- **No compaction.** The bundle patch disables `compaction-basic` and
-  `command-compact`. A summarizer whose priorities we cannot inspect must not
-  rewrite the history of a run we are measuring. The model-free tool-result
-  pruner stays on.
+- **Compaction as base configures it.** A build driven over forty rounds runs
+  past its context window long before the goal completes, so the summarizer
+  stays on: a run that dies at the ceiling measures the ceiling, not the model.
+  It summarizes with the conversation's own model, so no second route and no
+  second credential is involved.
 
 ## Where it lives
 

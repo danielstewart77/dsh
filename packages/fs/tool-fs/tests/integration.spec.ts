@@ -220,6 +220,74 @@ describe('default deployment (with dsh-fs-observation-policy)', () => {
       expect(result.isError).toBe(false)
       expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('one three')
     })
+
+    // A model emits the tool name and argument spelling it was trained on, so
+    // `str_replace` with `old_str`/`new_str` is a registered tool over this same
+    // backend, and `edit` answers that spelling too. Both reach disk or neither
+    // claim is worth anything, so each reads the file back.
+    it('str_replace replaces the literal text on disk', async () => {
+      await writeFile(join(dir, 'a.txt'), 'hello world')
+      await call('read', { file_path: 'a.txt' })
+      const result = await call('str_replace', { file_path: 'a.txt', old_str: 'world', new_str: 'there' })
+      expect(result.isError).toBe(false)
+      expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('hello there')
+    })
+
+    it('str_replace refuses an ambiguous match and leaves the file untouched', async () => {
+      await writeFile(join(dir, 'a.txt'), 'a a a')
+      await call('read', { file_path: 'a.txt' })
+      const result = await call('str_replace', { file_path: 'a.txt', old_str: 'a', new_str: 'b' })
+      expect(result.isError).toBe(true)
+      expect(result.error).toMatchObject({ info: { code: 'FS_AMBIGUOUS_EDIT' } })
+      expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('a a a')
+    })
+
+    it('edit accepts the old_str/new_str spelling', async () => {
+      await writeFile(join(dir, 'a.txt'), 'hello world')
+      await call('read', { file_path: 'a.txt' })
+      const result = await call('edit', { file_path: 'a.txt', old_str: 'world', new_str: 'there' })
+      expect(result.isError).toBe(false)
+      expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('hello there')
+    })
+
+    // A refusal must carry a code. Only a HarnessError's code reaches
+    // `result.error.info`, and a result with no info is written to the session
+    // log with no error field at all — so an uncoded refusal is tallied as a
+    // SUCCEEDED call and never reaches the report that names unserved dialects.
+    it('edit with neither spelling refuses as invalid arguments, with a code', async () => {
+      await writeFile(join(dir, 'a.txt'), 'hello world')
+      await call('read', { file_path: 'a.txt' })
+      const result = await call('edit', { file_path: 'a.txt' })
+      expect(result.isError).toBe(true)
+      expect(result.error).toMatchObject({ info: { code: 'INVALID_ARGS' } })
+      expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('hello world')
+    })
+
+    it('a str_replace refusal names str_replace\'s own argument spelling', async () => {
+      await writeFile(join(dir, 'a.txt'), 'hello world')
+      await call('read', { file_path: 'a.txt' })
+      const result = await call('str_replace', { file_path: 'a.txt' })
+      expect(text(result)).toContain('old_str')
+      expect(text(result)).not.toContain('old_string')
+    })
+
+    it('refuses a non-string replacement under either spelling, rather than reaching the filesystem', async () => {
+      await writeFile(join(dir, 'a.txt'), 'hello world')
+      await call('read', { file_path: 'a.txt' })
+      const result = await call('edit', { file_path: 'a.txt', old_str: 'world', new_str: { a: 1 } })
+      expect(result.error).toMatchObject({ info: { code: 'INVALID_ARGS' } })
+      expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('hello world')
+    })
+
+    it('refuses a call whose two spellings of one argument disagree', async () => {
+      await writeFile(join(dir, 'a.txt'), 'hello world')
+      await call('read', { file_path: 'a.txt' })
+      const result = await call('edit', {
+        file_path: 'a.txt', old_string: 'world', new_string: 'A', old_str: 'hello', new_str: 'B',
+      })
+      expect(result.error).toMatchObject({ info: { code: 'INVALID_ARGS' } })
+      expect(await readFile(join(dir, 'a.txt'), 'utf8')).toBe('hello world')
+    })
   })
 
   describe('the gate records only through the events (no method coupling)', () => {

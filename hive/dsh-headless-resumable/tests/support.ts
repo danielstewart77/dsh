@@ -27,7 +27,9 @@ export const ordinaryTurn: Script = (session, message, turn) => {
     turn, step: 1, callId: `call-${turn}` as never, name: 'write_file', arguments: '{}',
   })
   session.append('tool/result', {
-    turn, step: 1, message: { role: 'tool', content: [] } as never,
+    // A real result names its own call on the message, which is what the
+    // traffic tally and the session repair pass both read.
+    turn, step: 1, message: { role: 'tool', content: [], source: { kind: 'tool', callId: `call-${turn}` } } as never,
   }, { surfaceOp: 'append' })
   session.append('assistant/message', {
     turn,
