@@ -191,14 +191,57 @@ describe('a dispatch told to stop at the first refused call', () => {
       sessionId: 'conv-stop',
       mode: 'create',
       goalRounds: 30,
-      stopOnFailedCall: true,
+      stopOnDialectGap: true,
     })
 
     expect(report.turns).toBeLessThan(3)
-    expect(report.error?.code).toBe('STOPPED_ON_FAILED_CALL')
+    expect(report.error?.code).toBe('STOPPED_ON_DIALECT_GAP')
     // The report names the call as the model spelled it, which is the fix.
     expect(report.error?.message).toContain('str_replace(old_str)')
     expect(report.error?.message).toContain('UNKNOWN_TOOL')
+    await test.ctx.fiber.dispose()
+  })
+
+  /** A turn whose one tool call fails the way a tool fails at its own job. */
+  const failingTurn = (session: never, message: never, turn: number) => {
+    const live = session as unknown as {
+      append(type: string, data: unknown, options?: unknown): void
+    }
+    live.append('turn/start', { turn })
+    live.append('step/start', { turn, step: 1 })
+    live.append('user/message', message, { surfaceOp: 'append' })
+    live.append('tool/call', {
+      turn,
+      step: 1,
+      callId: `call-${turn}`,
+      name: 'str_replace_editor',
+      arguments: '{"old_str":"## Status"}',
+    })
+    live.append('tool/result', {
+      turn,
+      step: 1,
+      message: { role: 'tool', content: [], source: { kind: 'tool', callId: `call-${turn}` } },
+      error: { code: 'FS_EDIT_NOT_FOUND', message: 'no match for "## Status"' },
+    }, { surfaceOp: 'append' })
+    live.append('step/end', { turn, step: 1 })
+    live.append('turn/end', { turn, reason: { kind: 'completed' } })
+  }
+
+  it('drives every round through a tool that failed at its own job', async () => {
+    const test = await bench(failingTurn as never)
+    test.ctx.provide('goals', drivingGoals('build the app', 3, 3) as never)
+
+    const { report } = await test.run({
+      task: 'build the app',
+      sessionId: 'conv-domain-failure',
+      mode: 'create',
+      goalRounds: 3,
+      stopOnDialectGap: true,
+    })
+
+    expect(report.goalPhase).toBe('complete')
+    expect(report.traffic.failed).toBeGreaterThan(1)
+    expect(report.error?.code).toBeUndefined()
     await test.ctx.fiber.dispose()
   })
 

@@ -125,19 +125,34 @@ export interface FailedCall {
 }
 
 /**
- * The first refused call at or after `firstSeq`, if there is one.
+ * The codes that mean the harness refused a call it should have served: the
+ * arguments did not satisfy the schema, or the model named a tool that is not
+ * there. Both are dialect gaps — the model asked for something coherent in the
+ * dialect it knows and got nothing back — and both are fixed by widening the
+ * harness rather than by the model trying again.
+ */
+export const DIALECT_REFUSAL_CODES: readonly string[] = ['INVALID_ARGS', 'UNKNOWN_TOOL']
+
+/**
+ * The first dialect refusal at or after `firstSeq`, if there is one.
  *
- * While the harness is being hardened, the first refusal is the whole result of
- * a run: everything after it is the same model working around the same gap, and
- * nothing in those rounds names a second dialect we do not already owe a tool.
- * So a run can be stopped on it, which is why this is separate from the tally —
- * the tally answers what a finished run did, and this answers whether to carry
- * on at all.
+ * While the harness is being hardened, the first such refusal is the whole
+ * result of a run: everything after it is the same model working around the
+ * same gap. So a run can be stopped on it, which is why this is separate from
+ * the tally — the tally answers what a finished run did, and this answers
+ * whether to carry on at all.
+ *
+ * An ordinary tool failure is not one of these and does not appear here. A file
+ * that is not there, an edit string that does not match, a command that exited
+ * non-zero: the tool did its job, the result is the answer, and the model
+ * recovers from it in a turn. Stopping a forty-round build on one of those
+ * throws away the run to report something the harness already handled
+ * correctly.
  * @param events - the session's durable events.
  * @param firstSeq - the sequence number the owned interval starts at.
- * @returns the call, or nothing while every result has come back clean.
+ * @returns the call, or nothing while no call has been refused this way.
  */
-export function firstFailedCall(
+export function firstDialectRefusal(
   events: readonly SessionEvent[], firstSeq: number,
 ): FailedCall | undefined {
   const outstanding = new Set<string>()
@@ -157,6 +172,7 @@ export function firstFailedCall(
     outstanding.delete(callId)
     const error = event.data.error
     if (error === undefined) continue
+    if (!DIALECT_REFUSAL_CODES.includes(error.code)) continue
     const call = calls.get(callId)
     return {
       name: call?.name ?? 'unnamed',

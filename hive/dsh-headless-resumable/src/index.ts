@@ -34,7 +34,7 @@ type TurnEndReason = SessionEvent<'turn/end'>['data']['reason']
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 
-import { firstFailedCall, NO_TRAFFIC, toolTraffic } from './traffic.ts'
+import { firstDialectRefusal, NO_TRAFFIC, toolTraffic } from './traffic.ts'
 import type { FailedCall, ToolTraffic } from './traffic.ts'
 import type { SessionMode } from './startup.ts'
 
@@ -77,7 +77,7 @@ export interface Config {
    * run is measuring the app, and throwing away a finished build over one late
    * refusal measures nothing.
    */
-  stopOnFailedCall?: boolean
+  stopOnDialectGap?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -86,7 +86,7 @@ export const Config: z<Config> = z.object({
   mode: z.union(['create', 'resume'] as const).required(),
   goalRounds: z.number(),
   goalObjective: z.string(),
-  stopOnFailedCall: z.boolean(),
+  stopOnDialectGap: z.boolean(),
 })
 
 /** What the adapter reads off stdout: one line of JSON, whatever happened. */
@@ -376,10 +376,10 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
     // task therefore opens the conversation rather than racing a goal round.
     armGoal(goals, agent as never, config.goalObjective ?? config.task, rounds)
   }
-  // Armed before the task is sent, so a refusal in the opening turn stops the
-  // run as readily as one in round thirty.
-  const watch = config.stopOnFailedCall === true
-    ? watchForFailedCall(agent as never, firstSeq)
+  // Armed before the task is sent, so a gap in the opening turn stops the run as
+  // readily as one in round thirty.
+  const watch = config.stopOnDialectGap === true
+    ? watchForDialectRefusal(agent as never, firstSeq)
     : undefined
   agent.followup(createUserMessage({
     content: [{ type: 'text', text: config.task }],
@@ -431,7 +431,7 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
         : {}
       : {
         error: {
-          code: 'STOPPED_ON_FAILED_CALL',
+          code: 'STOPPED_ON_DIALECT_GAP',
           message: `${refusal.name}(${refusal.parameters.join(', ')}) refused with `
             + `${refusal.code} (${refusal.errorName})`,
         },
@@ -445,12 +445,12 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
  */
 export const FAILURE_POLL_MS = 250
 
-/** A watch that resolves the moment a tool call is refused, and can be dropped. */
+/** A watch that resolves the moment the harness refuses a call, and can be dropped. */
 interface FailureWatch {
   /**
-   * Resolves with the refusal; never resolves while the run stays clean. This
-   * is what cuts a round short, since a round is minutes long and nothing else
-   * wakes up inside one.
+   * Resolves with the refusal; never resolves while no call has been refused
+   * this way. This is what cuts a round short, since a round is minutes long and
+   * nothing else wakes up inside one.
    */
   readonly settled: Promise<FailedCall>
   /**
@@ -464,19 +464,19 @@ interface FailureWatch {
 }
 
 /**
- * Watch one run's own interval for its first refused tool call.
+ * Watch one run's own interval for its first dialect refusal.
  * @param agent - the live agent, read for its session events.
  * @param firstSeq - the sequence number this run's interval starts at.
  * @returns the watch.
  */
-export function watchForFailedCall(
+export function watchForDialectRefusal(
   agent: { session: { events: readonly SessionEvent[] } }, firstSeq: number,
 ): FailureWatch {
   let found: FailedCall | undefined
   let timer: ReturnType<typeof setInterval> | undefined
   const settled = new Promise<FailedCall>((resolve) => {
     timer = setInterval(() => {
-      const failure = firstFailedCall(agent.session.events, firstSeq)
+      const failure = firstDialectRefusal(agent.session.events, firstSeq)
       if (failure === undefined) return
       found = failure
       if (timer !== undefined) clearInterval(timer)
@@ -489,7 +489,7 @@ export function watchForFailedCall(
   return {
     settled,
     check: () => {
-      found ??= firstFailedCall(agent.session.events, firstSeq)
+      found ??= firstDialectRefusal(agent.session.events, firstSeq)
       return found
     },
     stop: () => {
