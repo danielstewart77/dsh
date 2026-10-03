@@ -48,6 +48,14 @@ export interface ResumableStartupValues {
   sessionId: string
   /** Create the session under that id, or continue the one already there. */
   mode: SessionMode
+  /**
+   * How many goal rounds this dispatch is willing to pay for. Absent means one
+   * physical turn — today's behaviour and the only thing a chat surface wants.
+   * A number above one arms a goal whose objective is this task, so the
+   * harness re-enters the model at every idle checkpoint until it produces
+   * evidence of completion or the cap runs out.
+   */
+  goalRounds?: number
 }
 
 /**
@@ -64,12 +72,33 @@ export function resumableCommand(): Command {
     .option('--session-id <id>', 'create the conversation under this id (its first process)')
     .option('--resume <id>', 'continue the conversation already persisted under this id')
     .option('--task-file <path>', 'read the task from this file instead of the positional')
+    .option('--goal-rounds <n>', 'drive the task as a goal for up to this many rounds (default: one turn)')
     .addHelpText('after', `
 Examples:
   dsh --profile hive --session-id abc "build the app"   open conversation abc
   dsh --profile hive --resume abc "now fix the chart"   continue conversation abc
   dsh --profile hive --resume abc --task-file turn.txt  a task argv cannot carry
 `)
+}
+
+/**
+ * Resolve the round cap, or refuse the invocation.
+ *
+ * A cap that cannot be read is refused rather than quietly taken as one. A
+ * measured run told to pay for forty rounds and silently given a single turn
+ * reports a number about a harness nobody ran.
+ * @param raw - the flag as typed, or undefined when it was not given.
+ * @returns the cap, or undefined when no cap was asked for.
+ * @throws UsageError when the value is not a positive integer.
+ */
+export function resolveGoalRounds(raw: string | undefined): number | undefined {
+  const text = raw?.trim() ?? ''
+  if (text === '') return undefined
+  const value = Number(text)
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new UsageError(`--goal-rounds ${text} must be a positive whole number`)
+  }
+  return value
 }
 
 /** A usage error: the invocation itself is wrong, before anything has started. */
@@ -89,7 +118,7 @@ export class UsageError extends Error {}
  */
 export function resolveInvocation(
   words: readonly string[],
-  options: { sessionId?: string; resume?: string; taskFile?: string },
+  options: { sessionId?: string; resume?: string; taskFile?: string; goalRounds?: string },
   readTask: (path: string) => string = path => readFileSync(path, 'utf8'),
 ): ResumableStartupValues {
   const positional = words.join(' ')
@@ -122,9 +151,11 @@ export function resolveInvocation(
   if (created === '' && resumed === '') {
     throw new UsageError('a conversation id is required; this process does not mint one')
   }
-  return resumed !== ''
-    ? { task, sessionId: resumed, mode: 'resume' }
-    : { task, sessionId: created, mode: 'create' }
+  const goalRounds = resolveGoalRounds(options.goalRounds)
+  const identity = resumed !== ''
+    ? { task, sessionId: resumed, mode: 'resume' as const }
+    : { task, sessionId: created, mode: 'create' as const }
+  return goalRounds === undefined ? identity : { ...identity, goalRounds }
 }
 
 /**

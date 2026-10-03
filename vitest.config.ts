@@ -84,6 +84,10 @@ const pwshCoverageExclusions = spawnSync(resolvePwshPath(), ['-NoLogo', '-NoProf
 
 const testIncludes = [
   'packages/*/*/tests/**/*.spec.{ts,tsx}',
+  // Our own out-of-tree surfaces are workspace members and their suites are the
+  // only coverage the hive adapter's harness side has; omitting them is how a
+  // fork's own code becomes the untested part of a tested repo.
+  'hive/*/tests/**/*.spec.ts',
   'apps/*/tests/**/*.spec.ts',
   'examples/*/tests/**/*.spec.ts',
   'scripts/**/*.spec.ts',
