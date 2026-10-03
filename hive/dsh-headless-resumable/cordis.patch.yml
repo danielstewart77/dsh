@@ -37,3 +37,4 @@
         mode: !!js ctx.resumableHeadlessStartup.mode
         goalRounds: !!js ctx.resumableHeadlessStartup.goalRounds
         goalObjective: !!js ctx.resumableHeadlessStartup.goalObjective
+        stopOnFailedCall: !!js ctx.resumableHeadlessStartup.stopOnFailedCall

@@ -57,6 +57,13 @@ export interface ResumableStartupValues {
    */
   goalRounds?: number
   /**
+   * End the run at the first refused tool call. For the nights the harness is
+   * itself under repair: the rounds after a refusal are the same model working
+   * around the same gap, and waiting for them costs an hour to learn what the
+   * first one already said.
+   */
+  stopOnFailedCall?: boolean
+  /**
    * The objective a goal is armed with, when it differs from the task.
    *
    * The task a conversation opens with is the composed system prompt and the
@@ -83,6 +90,7 @@ export function resumableCommand(): Command {
     .option('--resume <id>', 'continue the conversation already persisted under this id')
     .option('--task-file <path>', 'read the task from this file instead of the positional')
     .option('--goal-rounds <n>', 'drive the task as a goal for up to this many rounds (default: one turn)')
+    .option('--stop-on-failed-call', 'end the run at the first refused tool call instead of driving the remaining rounds')
     .option('--goal-objective-file <path>', 'read the goal objective from this file (default: the task)')
     .addHelpText('after', `
 Examples:
@@ -131,7 +139,7 @@ export function resolveInvocation(
   words: readonly string[],
   options: {
     sessionId?: string; resume?: string; taskFile?: string
-    goalRounds?: string; goalObjectiveFile?: string
+    goalRounds?: string; goalObjectiveFile?: string; stopOnFailedCall?: boolean
   },
   readTask: (path: string) => string = path => readFileSync(path, 'utf8'),
 ): ResumableStartupValues {
@@ -181,9 +189,10 @@ export function resolveInvocation(
       throw new UsageError(`--goal-objective-file ${objectiveFile} holds no objective`)
     }
   }
+  const stopping = options.stopOnFailedCall === true ? { stopOnFailedCall: true } : {}
   const identity = resumed !== ''
-    ? { task, sessionId: resumed, mode: 'resume' as const }
-    : { task, sessionId: created, mode: 'create' as const }
+    ? { task, sessionId: resumed, mode: 'resume' as const, ...stopping }
+    : { task, sessionId: created, mode: 'create' as const, ...stopping }
   if (goalRounds === undefined) return identity
   return goalObjective === ''
     ? { ...identity, goalRounds }

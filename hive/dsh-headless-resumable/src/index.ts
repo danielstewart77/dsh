@@ -34,8 +34,8 @@ type TurnEndReason = SessionEvent<'turn/end'>['data']['reason']
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 
-import { NO_TRAFFIC, toolTraffic } from './traffic.ts'
-import type { ToolTraffic } from './traffic.ts'
+import { firstFailedCall, NO_TRAFFIC, toolTraffic } from './traffic.ts'
+import type { FailedCall, ToolTraffic } from './traffic.ts'
 import type { SessionMode } from './startup.ts'
 
 /** Stable Cordis plugin name. */
@@ -66,6 +66,18 @@ export interface Config {
   goalRounds?: number
   /** The goal's objective, when the composed task is not what to repeat. */
   goalObjective?: string
+  /**
+   * End the run at the first refused tool call rather than driving the rest of
+   * the rounds.
+   *
+   * For the nights the harness itself is the thing under repair, the first
+   * refusal is the whole result: the rounds after it are the same model working
+   * around the same gap, and they cost an hour to tell us what the first one
+   * already did. Off by default, because once the dialect gaps are closed the
+   * run is measuring the app, and throwing away a finished build over one late
+   * refusal measures nothing.
+   */
+  stopOnFailedCall?: boolean
 }
 
 export const Config: z<Config> = z.object({
@@ -74,6 +86,7 @@ export const Config: z<Config> = z.object({
   mode: z.union(['create', 'resume'] as const).required(),
   goalRounds: z.number(),
   goalObjective: z.string(),
+  stopOnFailedCall: z.boolean(),
 })
 
 /** What the adapter reads off stdout: one line of JSON, whatever happened. */
@@ -363,21 +376,31 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
     // task therefore opens the conversation rather than racing a goal round.
     armGoal(goals, agent as never, config.goalObjective ?? config.task, rounds)
   }
+  // Armed before the task is sent, so a refusal in the opening turn stops the
+  // run as readily as one in round thirty.
+  const watch = config.stopOnFailedCall === true
+    ? watchForFailedCall(agent as never, firstSeq)
+    : undefined
   agent.followup(createUserMessage({
     content: [{ type: 'text', text: config.task }],
     source: { kind: 'user' },
   }))
-  await agent.whenIdle()
+  await (watch === undefined
+    ? agent.whenIdle()
+    : Promise.race([agent.whenIdle(), watch.settled]))
 
   // The goal rounds. Each one is a fresh model turn the harness opened, not the
   // model's own decision to carry on — which is the whole point: a small model
   // that stops early stops a round, not the job.
-  if (goals !== undefined) {
+  if (goals !== undefined && watch?.check() === undefined) {
     for (;;) {
       const goal = goals.get(agent as never)
       if (!continuing(goal)) break
       if (!await waitForRound(goals, agent as never, goal?.roundsStarted ?? 0)) break
-      await agent.whenIdle()
+      await (watch === undefined
+        ? agent.whenIdle()
+        : Promise.race([agent.whenIdle(), watch.settled]))
+      if (watch?.check() !== undefined) break
       const sofar = summarize(agent.session.events, firstSeq)
       reportProgress(io, {
         round: goals.get(agent as never)?.roundsStarted ?? 0,
@@ -386,8 +409,10 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
       })
     }
   }
+  watch?.stop()
   await sessions.flush(agent.session)
 
+  const refusal = watch?.check()
   const { text, reason, turns } = summarize(agent.session.events, firstSeq)
   const traffic = toolTraffic(agent.session.events, firstSeq)
   const outcome: TurnReport['outcome'] = reason?.kind ?? 'unknown'
@@ -400,10 +425,78 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
     traffic,
     turns,
     ...(finalGoal === undefined ? {} : { goalPhase: finalGoal.phase }),
-    ...(reason?.kind === 'error'
-      ? { error: { code: reason.error.code, message: reason.error.message } }
-      : {}),
+    ...(refusal === undefined
+      ? reason?.kind === 'error'
+        ? { error: { code: reason.error.code, message: reason.error.message } }
+        : {}
+      : {
+        error: {
+          code: 'STOPPED_ON_FAILED_CALL',
+          message: `${refusal.name}(${refusal.parameters.join(', ')}) refused with `
+            + `${refusal.code} (${refusal.errorName})`,
+        },
+      }),
   })
+}
+
+/**
+ * How often a stopping run re-reads the session for a refusal. The session's
+ * event array grows in memory, so this is a walk over a list and not IO.
+ */
+export const FAILURE_POLL_MS = 250
+
+/** A watch that resolves the moment a tool call is refused, and can be dropped. */
+interface FailureWatch {
+  /**
+   * Resolves with the refusal; never resolves while the run stays clean. This
+   * is what cuts a round short, since a round is minutes long and nothing else
+   * wakes up inside one.
+   */
+  readonly settled: Promise<FailedCall>
+  /**
+   * Read the session now rather than waiting for the next poll. A round
+   * boundary is a decision point, and a refusal that landed microseconds
+   * earlier must not buy another round for want of a timer tick.
+   */
+  check(): FailedCall | undefined
+  /** Stop polling, so a finished run leaves no timer behind. */
+  stop(): void
+}
+
+/**
+ * Watch one run's own interval for its first refused tool call.
+ * @param agent - the live agent, read for its session events.
+ * @param firstSeq - the sequence number this run's interval starts at.
+ * @returns the watch.
+ */
+export function watchForFailedCall(
+  agent: { session: { events: readonly SessionEvent[] } }, firstSeq: number,
+): FailureWatch {
+  let found: FailedCall | undefined
+  let timer: ReturnType<typeof setInterval> | undefined
+  const settled = new Promise<FailedCall>((resolve) => {
+    timer = setInterval(() => {
+      const failure = firstFailedCall(agent.session.events, firstSeq)
+      if (failure === undefined) return
+      found = failure
+      if (timer !== undefined) clearInterval(timer)
+      timer = undefined
+      resolve(failure)
+    }, FAILURE_POLL_MS)
+    // A poll that keeps the process alive would outlive the run it watches.
+    timer.unref?.()
+  })
+  return {
+    settled,
+    check: () => {
+      found ??= firstFailedCall(agent.session.events, firstSeq)
+      return found
+    },
+    stop: () => {
+      if (timer !== undefined) clearInterval(timer)
+      timer = undefined
+    },
+  }
 }
 
 /**

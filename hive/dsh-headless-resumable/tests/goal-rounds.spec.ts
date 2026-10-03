@@ -159,6 +159,64 @@ describe('a dispatch that asks for goal rounds', () => {
   })
 })
 
+describe('a dispatch told to stop at the first refused call', () => {
+  /** A turn whose one tool call comes back refused. */
+  const refusingTurn = (session: never, message: never, turn: number) => {
+    const live = session as unknown as {
+      append(type: string, data: unknown, options?: unknown): void
+    }
+    live.append('turn/start', { turn })
+    live.append('step/start', { turn, step: 1 })
+    live.append('user/message', message, { surfaceOp: 'append' })
+    live.append('tool/call', {
+      turn, step: 1, callId: `call-${turn}`, name: 'str_replace', arguments: '{"old_str":"a"}',
+    })
+    live.append('tool/result', {
+      turn,
+      step: 1,
+      message: { role: 'tool', content: [], source: { kind: 'tool', callId: `call-${turn}` } },
+      error: { code: 'UNKNOWN_TOOL', message: 'no tool named str_replace' },
+    }, { surfaceOp: 'append' })
+    live.append('step/end', { turn, step: 1 })
+    live.append('turn/end', { turn, reason: { kind: 'completed' } })
+  }
+
+  it('ends the run on the refusal instead of driving the remaining rounds', async () => {
+    const test = await bench(refusingTurn as never)
+    // The driver would happily open thirty more rounds.
+    test.ctx.provide('goals', drivingGoals('build the app', 30, 99) as never)
+
+    const { report } = await test.run({
+      task: 'build the app',
+      sessionId: 'conv-stop',
+      mode: 'create',
+      goalRounds: 30,
+      stopOnFailedCall: true,
+    })
+
+    expect(report.turns).toBeLessThan(3)
+    expect(report.error?.code).toBe('STOPPED_ON_FAILED_CALL')
+    // The report names the call as the model spelled it, which is the fix.
+    expect(report.error?.message).toContain('str_replace(old_str)')
+    expect(report.error?.message).toContain('UNKNOWN_TOOL')
+    await test.ctx.fiber.dispose()
+  })
+
+  it('drives every round when it was not told to stop', async () => {
+    const test = await bench(refusingTurn as never)
+    test.ctx.provide('goals', drivingGoals('build the app', 3, 3) as never)
+
+    const { report } = await test.run({
+      task: 'build the app', sessionId: 'conv-carry-on', mode: 'create', goalRounds: 3,
+    })
+
+    expect(report.goalPhase).toBe('complete')
+    expect(report.traffic.failed).toBeGreaterThan(1)
+    expect(report.error?.code).toBeUndefined()
+    await test.ctx.fiber.dispose()
+  })
+})
+
 describe('arming the goal for a dispatch', () => {
   it('creates one from the task when the conversation holds none', () => {
     const goals = spyGoals(undefined)
