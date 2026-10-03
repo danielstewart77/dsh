@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-import { toolTraffic } from '../src/traffic.ts'
+import { firstDialectRefusal, toolTraffic } from '../src/traffic.ts'
 
 let seq = 0
 function event<T extends SessionEvent['type']>(type: T, data: unknown): SessionEvent {
@@ -140,5 +140,68 @@ describe('tool traffic', () => {
 
     expect(traffic).toMatchObject({ emitted: 0, answered: 0, unanswered: 0 })
     expect(traffic.failuresByCode).toEqual({})
+  })
+})
+
+describe('the first dialect refusal', () => {
+  it('reports a call the harness refused for arguments it would not take', () => {
+    const events = [
+      call('a', 'read', '{"file_path":"/app/db.py"}'),
+      result('a'),
+      call('b', 'bash', '{"command":"pytest"}'),
+      result('b', { name: 'ToolArgsError', code: 'INVALID_ARGS' }),
+    ]
+
+    const refusal = firstDialectRefusal(events, 0)
+
+    expect(refusal).toEqual({
+      name: 'bash',
+      parameters: ['command'],
+      code: 'INVALID_ARGS',
+      errorName: 'ToolArgsError',
+    })
+  })
+
+  it('reports a call naming a tool the harness does not have', () => {
+    const events = [
+      call('a', 'str_replace', '{"old_str":"a","new_str":"b"}'),
+      result('a', { name: 'UnknownToolError', code: 'UNKNOWN_TOOL' }),
+    ]
+
+    expect(firstDialectRefusal(events, 0)?.code).toBe('UNKNOWN_TOOL')
+  })
+
+  it('passes over a tool that failed for its own reason, so the run carries on', () => {
+    const events = [
+      call('a', 'str_replace_editor', '{"file_path":"/app/notes.md","old_str":"## Status"}'),
+      result('a', { name: 'FsError', code: 'FS_EDIT_NOT_FOUND' }),
+      call('b', 'read', '{"file_path":"/app/gone.py"}'),
+      result('b', { name: 'FsError', code: 'FS_NOT_FOUND' }),
+      call('c', 'bash', '{"command":"pytest"}'),
+      result('c', { name: 'ShellError', code: 'SHELL_EXIT' }),
+    ]
+
+    expect(firstDialectRefusal(events, 0)).toBeUndefined()
+  })
+
+  it('finds the dialect refusal that lands after an ordinary failure', () => {
+    const events = [
+      call('a', 'read', '{"file_path":"/app/gone.py"}'),
+      result('a', { name: 'FsError', code: 'FS_NOT_FOUND' }),
+      call('b', 'glob', '{"pattern":"**/*.py"}'),
+      result('b', { name: 'ToolArgsError', code: 'INVALID_ARGS' }),
+    ]
+
+    expect(firstDialectRefusal(events, 0)?.name).toBe('glob')
+  })
+
+  it('looks at this turn only, so a resumed conversation does not stop on its history', () => {
+    const history = [
+      call('old', 'bash', '{"command":"ls"}'),
+      result('old', { name: 'ToolArgsError', code: 'INVALID_ARGS' }),
+    ]
+    const mine = [call('new', 'read', '{"file_path":"/app/db.py"}'), result('new')]
+
+    expect(firstDialectRefusal([...history, ...mine], mine[0]!.seq)).toBeUndefined()
   })
 })
