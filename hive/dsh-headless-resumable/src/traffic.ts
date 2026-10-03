@@ -38,6 +38,78 @@ export interface ToolTraffic {
    */
   failuresByCode: Record<string, number>
   callsByTool: Record<string, number>
+  /**
+   * The calls the harness could not serve, as the name the model asked for and
+   * the argument names it supplied — a tool that is not registered under that
+   * name, or one that is but rejected the arguments.
+   *
+   * This is the whole input to the fix. A model emits the tool names and
+   * argument spellings its training put in it, and that is not ours to change:
+   * the harness grows a tool matching the call instead. Reported from the run
+   * rather than dug out of a session log by hand, because the next model speaks
+   * a different dialect and the same work starts over. Names only — one
+   * argument is an entire file, and this rides in a single result frame.
+   */
+  unservedCalls: UnservedCall[]
+}
+
+/** One call the harness refused, as the model spelled it. */
+export interface UnservedCall {
+  /** The tool name the model asked for. */
+  name: string
+  /** The argument names it supplied, in the order they arrived. */
+  parameters: string[]
+  /** How many times this exact call shape was refused in the interval. */
+  count: number
+}
+
+/** Longest argument name reported, and the most names reported per call. */
+const MAX_PARAMETER_NAME = 120
+const MAX_PARAMETERS = 24
+
+/**
+ * The call a result closes. Every writer of a real `tool/result` — the agent
+ * loop, the session repair pass, the compaction pruner — names it on the
+ * message, and nothing else identifies it: position cannot, because one call
+ * left unanswered by a drained dispatch offsets every attribution after it for
+ * the rest of a forty-round run. A message carrying no source at all is not a
+ * shape this harness writes, so it falls back to position rather than taking
+ * the whole report down.
+ * @param message - the result event's message.
+ * @param outstanding - call ids still awaiting a result, in call order.
+ * @returns the call id to attribute this result to.
+ */
+function resultCallId(message: unknown, outstanding: ReadonlySet<string>): string {
+  if (message !== null && typeof message === 'object' && 'source' in message) {
+    const source = (message as { source?: unknown }).source
+    if (source !== null && typeof source === 'object' && 'callId' in source) {
+      return String((source as { callId: unknown }).callId)
+    }
+  }
+  const oldest = outstanding.values().next()
+  return oldest.done === true ? '' : oldest.value
+}
+
+/** Failure codes that mean the call never reached a tool body. */
+const UNSERVED_CODES: ReadonlySet<string> = new Set(['UNKNOWN_TOOL', 'INVALID_ARGS'])
+
+/**
+ * The argument names of a logged call, whose arguments are a JSON string.
+ * @param raw - the `tool/call` event's `arguments` payload.
+ * @returns the top-level keys, or an empty list for anything that is not an object.
+ */
+function argumentNames(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return []
+    // Capped in both directions. A model malformed enough to fail on arguments
+    // is a model that can put a whole function body in key position, and this
+    // rides in the single JSON line the run reports itself on.
+    return Object.keys(parsed).slice(0, MAX_PARAMETERS).map(key => key.slice(0, MAX_PARAMETER_NAME))
+  } catch {
+    // Unparseable arguments are still a call worth reporting by name.
+    return []
+  }
 }
 
 /** An empty tally, so a turn that emitted nothing reports zeroes rather than nothing. */
@@ -49,6 +121,7 @@ export const NO_TRAFFIC: ToolTraffic = {
   unanswered: 0,
   failuresByCode: {},
   callsByTool: {},
+  unservedCalls: [],
 }
 
 function bump(counts: Record<string, number>, key: string): void {
@@ -67,17 +140,39 @@ export function toolTraffic(events: readonly SessionEvent[], firstSeq: number): 
     ...NO_TRAFFIC,
     failuresByCode: {},
     callsByTool: {},
+    unservedCalls: [],
   }
   const outstanding = new Set<string>()
+  const calls = new Map<string, { name: string; parameters: string[] }>()
+  // Keyed by call shape, not appended per occurrence: the failure this report
+  // exists to catch is one untrained-away tool name emitted every round, and a
+  // forty-round run would put forty identical entries on one line while
+  // `failuresByCode` beside it already carries the count.
+  const unserved = new Map<string, UnservedCall>()
+  // Results seen, so a pruner's replacement event — compaction appends a second
+  // `tool/result` per oversized result, error field and all — is tallied once.
+  const answered = new Set<string>()
   for (const event of events) {
     if (event.seq < firstSeq) continue
     if (event.type === 'tool/call') {
       traffic.emitted += 1
       bump(traffic.callsByTool, event.data.name)
       outstanding.add(String(event.data.callId))
+      calls.set(String(event.data.callId), {
+        name: event.data.name,
+        parameters: argumentNames(event.data.arguments),
+      })
       continue
     }
     if (event.type !== 'tool/result') continue
+    // A result names its own call on the message it carries, which is what the
+    // session repair pass reads. Position does not identify it: one call left
+    // unanswered by a drained dispatch offsets every later attribution, and a
+    // compaction pruner appends a duplicate result that would consume a second
+    // call's entry — so the dialect reported would be a tool that worked.
+    const callId = resultCallId(event.data.message, outstanding)
+    if (answered.has(callId)) continue
+    answered.add(callId)
     traffic.answered += 1
     const error = event.data.error
     if (error === undefined) {
@@ -86,12 +181,18 @@ export function toolTraffic(events: readonly SessionEvent[], firstSeq: number): 
       traffic.failed += 1
       bump(traffic.failuresByCode, error.code)
     }
-    // A result identifies its call through the message, not the event data, so
-    // the oldest outstanding call is the one it closes: results arrive in call
-    // order within a step, and the only use of the set is the final remainder.
-    const oldest = outstanding.values().next()
-    if (oldest.done !== true) outstanding.delete(oldest.value)
+    outstanding.delete(callId)
+    const call = calls.get(callId)
+    if (error === undefined || !UNSERVED_CODES.has(error.code) || call === undefined) continue
+    const key = `${call.name}\u0000${call.parameters.join('\u0000')}`
+    const seen = unserved.get(key)
+    if (seen === undefined) {
+      unserved.set(key, { ...call, count: 1 })
+    } else {
+      seen.count += 1
+    }
   }
   traffic.unanswered = outstanding.size
+  traffic.unservedCalls = [...unserved.values()]
   return traffic
 }

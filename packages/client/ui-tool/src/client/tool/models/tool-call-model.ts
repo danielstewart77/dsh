@@ -46,6 +46,9 @@ const TOOL_VARIANTS: Record<string, ToolRowVariant> = {
   glob: 'search',
   write: 'write',
   edit: 'edit',
+  // The same literal-edit body under the name a Claude-trained model calls, so
+  // it reads as an edit row rather than an unclassified one.
+  str_replace: 'edit',
   run_code: 'code',
   cordis_package_inspect: 'read',
   cordis_runtime_inspect: 'read',

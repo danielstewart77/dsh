@@ -67,7 +67,9 @@ function sameContextPayload(left: UserMessage, right: UserMessage): boolean {
     && isDeepStrictEqual(left.source, right.source)
 }
 
-const FILE_TOUCH_TOOL_NAMES = new Set(['read', 'write', 'edit'])
+// `str_replace` is `edit` under another registered name; a file touched
+// through it projects the same nested AGENTS.md as one touched through `edit`.
+const FILE_TOUCH_TOOL_NAMES = new Set(['read', 'write', 'edit', 'str_replace'])
 
 function filePathFromExecution(exec: ToolExecution): string | undefined {
   if (!FILE_TOUCH_TOOL_NAMES.has(exec.name)) return undefined

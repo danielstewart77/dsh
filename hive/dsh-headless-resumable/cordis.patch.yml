@@ -2,12 +2,11 @@
 # not mint. Rides directly over dsh-base, like the headless bundle it is a
 # sibling of, and mounts no Host, HTTP server, Web runtime or browser plugin.
 #
-# Two rows differ from `dsh-headless`. The runner is ours, because theirs mints
-# its own session id and cannot continue one. And `compaction-basic` is off:
-# it is a summarizer whose priorities we cannot inspect, and a run being
-# measured for tool traffic must not have its history silently rewritten by
-# something we did not write. The tool-result pruner stays on — it is model-free
-# and deterministic, and stale tool results are most of the bulk in a build.
+# One row differs from `dsh-headless`: the runner is ours, because theirs mints
+# its own session id and cannot continue one. Compaction is left as base
+# configures it — a long build runs past its context window, and a run that dies
+# at the ceiling measures the ceiling rather than the model. The summarizer is
+# the conversation's own model by default, so no second route is involved.
 
 - id: system-prompt
   config:
@@ -15,15 +14,6 @@
       You are a coding agent powered by the {{model}} model. Your working directory is {{cwd}}.
 
 - id: hmr
-  disabled: true
-
-# Off until our own backend registers this seam. A run that hits the context
-# ceiling is a measurement we want; a run quietly summarized by a stranger is
-# not a measurement at all.
-- id: compaction-basic
-  disabled: true
-
-- id: command-compact
   disabled: true
 
 - id: tools

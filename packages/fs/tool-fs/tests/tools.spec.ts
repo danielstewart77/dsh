@@ -150,10 +150,17 @@ describe('session cwd resolution', () => {
   })
 })
 
+/** The registered schema for any tool name, narrowed to its declared properties. */
+function fsSchemaByName(ctx: Context, name: string) {
+  const schema = ctx.tools.schemas().find(s => s.name === name)
+  if (!schema) throw new Error(`${name} tool not registered`)
+  return schema as unknown as { parameters: { properties: Record<string, unknown> } }
+}
+
 describe('registration', () => {
-  it('registers read, write, and edit', async () => {
+  it('registers read, write, and edit under both of edit\'s names', async () => {
     const { ctx } = await setup()
-    expect(ctx.tools.schemas().map(s => s.name).sort()).toEqual(['edit', 'read', 'write'])
+    expect(ctx.tools.schemas().map(s => s.name).sort()).toEqual(['edit', 'read', 'str_replace', 'write'])
   })
 
   it('declares read parallel-safe while write/edit remain exclusive', async () => {
@@ -164,6 +171,26 @@ describe('registration', () => {
       .toEqual({ kind: 'exclusive' })
     expect(ctx.tools.executionMode({ signal: testToolSignal, callId: CallId('edit-exclusive'), name: 'edit', arguments: { file_path: 'a.txt', old_string: 'x', new_string: 'y' } }))
       .toEqual({ kind: 'exclusive' })
+  })
+
+  // What a model sends is what its schema offered it, so a spelling the tool
+  // accepts but does not declare is a spelling no model will ever use — and an
+  // undeclared key is also type-checked by nothing on the way in.
+  it('declares every accepted spelling of the replacement pair on both edit names', async () => {
+    const { ctx } = await setup()
+    const parameters = (name: string) =>
+      Object.keys(fsSchemaByName(ctx, name).parameters.properties).sort()
+    expect(parameters('edit')).toContain('old_str')
+    expect(parameters('edit')).toContain('old_string')
+    expect(parameters('str_replace')).toContain('old_str')
+    expect(parameters('str_replace')).toContain('old_string')
+  })
+
+  it('names its own spelling in each tool\'s guidance', async () => {
+    const { ctx } = await setup()
+    const prompt = renderPrompt(await ctx.systemPrompt.assemble())
+    expect(prompt).toContain('Use the str_replace tool')
+    expect(prompt).toContain('replaces literal old_str with new_str')
   })
 
   it('registers prompt sections for each tool', async () => {
@@ -191,9 +218,9 @@ describe('registration', () => {
     const fiber = await ctx.plugin(ToolFs)
     // Each tool contributes BOTH a schema and a prompt section; disposal must
     // withdraw both, not just the schemas.
-    expect(ctx.tools.schemas()).toHaveLength(3)
+    expect(ctx.tools.schemas()).toHaveLength(4)
     const sectionNames = (a: { sections: { name: string }[] }) => a.sections.map(s => s.name).sort()
-    expect(sectionNames(await ctx.systemPrompt.assemble())).toEqual(['deployment:persona', 'harness:identity', 'tool:edit', 'tool:read', 'tool:write'])
+    expect(sectionNames(await ctx.systemPrompt.assemble())).toEqual(['deployment:persona', 'harness:identity', 'tool:edit', 'tool:read', 'tool:str_replace', 'tool:write'])
     await fiber.dispose()
     expect(ctx.tools.schemas()).toHaveLength(0)
     // Only the system-prompt plugin's own built-in sections remain.
@@ -897,6 +924,27 @@ describe('sandbox escalation API (write/edit)', () => {
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('the user rejected escalating this operation to "danger-full-access"')
     expect(fs.stamped).toEqual([])
+  })
+
+  // The approval the user sees must name the tool that asked. `str_replace` and
+  // `edit` share one body, so a hardcoded name here would put the other tool's
+  // name on the audit trail and in front of the person deciding.
+  it('an escalated str_replace asks under its own name, not edit\'s', async () => {
+    const { ctx } = await setupConfining({ approval: true })
+    const asked: unknown[] = []
+    ctx.on('approval/request', (request: unknown) => {
+      asked.push(request)
+      return Promise.resolve('allowed-once' as const)
+    })
+    await ctx.tools.execute({
+      callId: CallId('call-fs-esc-str-replace'),
+      name: 'str_replace',
+      arguments: { file_path: 'a.txt', old_str: 'x', new_str: 'y', sandbox_permissions: 'danger-full-access', justification: 'the test needs it' },
+      agent: escalationAgent() as never,
+      signal: new AbortController().signal,
+    })
+    expect(asked).toHaveLength(1)
+    expect(JSON.stringify(asked[0])).toContain('str_replace')
   })
 
   it('escalation without an approval service fails closed', async () => {
