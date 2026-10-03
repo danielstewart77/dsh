@@ -349,6 +349,26 @@ describe('goal tool state transitions', () => {
     expect(goal).toMatchObject({ phase: 'active', revision: 4 })
   })
 
+  it('updates twice from one read, and with no revision at all', async () => {
+    const { ctx, root } = await harness()
+    openTurn(root, { kind: 'user' })
+    const created = resultGoal(await execute(ctx, 'create_goal', { objective: 'old' }, root.agent))
+    const stale = created['revision'] as number
+    const edited = resultGoal(await execute(ctx, 'update_goal', {
+      goal_id: created['id'], revision: stale, action: 'edit', objective: 'new',
+    }, root.agent))
+    expect(edited).toMatchObject({ objective: 'new', revision: stale + 1 })
+    // The revision the model still has written down is now one behind.
+    const again = resultGoal(await execute(ctx, 'update_goal', {
+      goal_id: created['id'], revision: stale, action: 'pause',
+    }, root.agent))
+    expect(again).toMatchObject({ phase: 'paused', revision: stale + 2 })
+    const resumed = resultGoal(await execute(ctx, 'update_goal', {
+      goal_id: created['id'], action: 'resume',
+    }, root.agent))
+    expect(resumed).toMatchObject({ phase: 'active', revision: stale + 3 })
+  })
+
   it('injects one wrap-up instruction for an autonomous completion but leaves a human pause interactive', async () => {
     const { ctx, root } = await harness()
     const humanTurn = openTurn(root, { kind: 'user' })

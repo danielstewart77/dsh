@@ -83,6 +83,14 @@
             "type": "string",
             "description": "Literal replacement text. Use an empty string to delete the match."
           },
+          "old_str": {
+            "type": "string",
+            "description": "Accepted alias of old_string."
+          },
+          "new_str": {
+            "type": "string",
+            "description": "Accepted alias of new_string."
+          },
           "replace_all": {
             "type": "boolean",
             "description": "Replace all matches. Defaults to false; when false, old_string must appear exactly once."
@@ -101,9 +109,7 @@
           }
         },
         "required": [
-          "file_path",
-          "old_string",
-          "new_string"
+          "file_path"
         ]
       }
     },
@@ -282,6 +288,54 @@
       }
     },
     {
+      "name": "str_replace",
+      "description": "Edit an existing UTF-8 text file by replacing literal text.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "file_path": {
+            "type": "string",
+            "description": "Path to edit, resolved by the filesystem backend."
+          },
+          "old_str": {
+            "type": "string",
+            "description": "Literal text to replace. Must match exactly."
+          },
+          "new_str": {
+            "type": "string",
+            "description": "Literal replacement text. Use an empty string to delete the match."
+          },
+          "old_string": {
+            "type": "string",
+            "description": "Accepted alias of old_str."
+          },
+          "new_string": {
+            "type": "string",
+            "description": "Accepted alias of new_str."
+          },
+          "replace_all": {
+            "type": "boolean",
+            "description": "Replace all matches. Defaults to false; when false, old_str must appear exactly once."
+          },
+          "sandbox_permissions": {
+            "type": "string",
+            "description": "The wider sandbox mode this file operation needs. Only valid as a one-shot retry of an operation the sandbox just denied; requires justification and user approval.",
+            "enum": [
+              "workspace-write",
+              "danger-full-access"
+            ]
+          },
+          "justification": {
+            "type": "string",
+            "description": "Required with sandbox_permissions: one sentence for the user explaining why this exact file operation needs the wider access."
+          }
+        },
+        "required": [
+          "file_path"
+        ]
+      }
+    },
+    {
       "name": "subagent",
       "description": "Delegate a self-contained task to a subagent (a separate agent that works in its own context) to offload focused, independent work — research, a scoped implementation, an analysis — so it does not consume this conversation's context. The subagent returns its result, not its intermediate steps. Give it a complete, standalone prompt: it does not see this conversation. This tool runs in the background by default, immediately returns a durable subagent id, and keeps the child conversation available for later turns. When that run settles, the runtime sends the parent a notice containing its outcome and any final assistant message; `send_message` starts a later turn in the same child conversation. Set `run_in_background: false` only when your next action depends on receiving the result.",
       "parameters": {
@@ -368,7 +422,7 @@
     },
     {
       "name": "update_goal",
-      "description": "Update the exact current goal revision. edit, pause, and resume require a direct top-level human request. During an automatic continuation of the current goal, complete and blocked are also allowed. blocked is rejected before the configured minimum round count; the model remains responsible for judging that the same condition persisted across those rounds and must explain it in blocked_reason.",
+      "description": "Update the current goal. edit, pause, and resume require a direct top-level human request. During an automatic continuation of the current goal, complete and blocked are also allowed. blocked is rejected before the configured minimum round count; the model remains responsible for judging that the same condition persisted across those rounds and must explain it in blocked_reason.",
       "parameters": {
         "type": "object",
         "properties": {
@@ -378,7 +432,7 @@
           },
           "revision": {
             "type": "number",
-            "description": "Exact positive revision returned by get_goal."
+            "description": "Accepted and ignored; the current revision is read here, so a stale one is no error."
           },
           "action": {
             "type": "string",
@@ -406,7 +460,6 @@
         },
         "required": [
           "goal_id",
-          "revision",
           "action"
         ]
       }
