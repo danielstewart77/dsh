@@ -225,6 +225,43 @@ describe('tool-str-replace-editor', () => {
     expect(await readFile(sample, 'utf8')).toBe('fresh')
   })
 
+  // A model emits the argument names its training put in it. One sent
+  // `file_path` and `file_text` here six times on a real run and was refused
+  // six times, so both spellings work and an omitted command is inferred.
+  it('creates a file when the path arrives as file_path', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'aliased.txt')
+
+    const created = await call(ctx, owner, {
+      command: 'create',
+      file_path: sample,
+      file_text: 'fresh',
+    })
+
+    expect(created.isError).toBe(false)
+    expect(await readFile(sample, 'utf8')).toBe('fresh')
+  })
+
+  it('replaces text when the call names no command at all', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'inferred.txt')
+    await writeFile(sample, 'before OLD after')
+
+    const edited = await call(ctx, owner, { file_path: sample, old_str: 'OLD', new_str: 'NEW' })
+
+    expect(edited.isError).toBe(false)
+    expect(await readFile(sample, 'utf8')).toBe('before NEW after')
+  })
+
+  it('refuses a call naming the path under neither spelling, with a code', async () => {
+    const { ctx, owner } = await setup()
+
+    const result = await call(ctx, owner, { command: 'view' })
+
+    expect(result.isError).toBe(true)
+    expect(result.error).toMatchObject({ info: { code: 'INVALID_ARGS' } })
+  })
+
   it('writes replacement text literally', async () => {
     const { ctx, root, owner } = await setup()
     const sample = join(root, 'literal.txt')
