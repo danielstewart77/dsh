@@ -1,0 +1,13 @@
+{
+  "name": "dsh-profile-hive",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@hive/dsh-headless-resumable"
+      ]
+    }
+  }
+}

@@ -1,0 +1,4 @@
+node_modules/
+tsconfig.tsbuildinfo
+# A throwaway DSH_HOME for the command-line proof: profile copy, sessions, credentials.
+.dsh-home/

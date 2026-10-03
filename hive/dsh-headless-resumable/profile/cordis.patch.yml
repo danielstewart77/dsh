@@ -1,0 +1,19 @@
+# The proof profile: the hive bundle over dsh-base, pointed at this host's
+# inference proxy so a turn reaches a real model and persists real history.
+- id: agent-default-model
+  config:
+    provider: hive-proxy
+    model: qwen35-131k
+
+- id: llm-pi-ai
+  config:
+    providers:
+      hive-proxy:
+        displayName: Hive inference proxy
+        apiKeyEnv: HIVE_PROXY_KEY
+        api: openai-completions
+        baseURL: http://127.0.0.1:8899/v1
+        models:
+          - id: qwen35-131k
+            name: Qwen 3.5 (local, via proxy)
+            contextWindow: 131072

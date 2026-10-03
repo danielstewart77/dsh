@@ -1,5 +1,8 @@
 packages:
   - vendor/*
+  # Our own out-of-tree surfaces, kept here only because the npm-published
+  # package set is internally inconsistent and cannot be installed standalone.
+  - hive/*
   - packages/*/*
   # The Landlock launcher is developed with its harness consumers but keeps
   # its native build and publication scripts under native/landlock-run.
