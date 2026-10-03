@@ -4,11 +4,21 @@
   "license": "MIT",
   "description": "A resumable one-shot dsh surface: run a turn in the conversation the hive minted, and report the turn as data.",
   "type": "module",
-  "main": "src/index.ts",
+  "main": "lib/types/index.js",
   "exports": {
-    ".": "./src/index.ts",
-    "./startup": "./src/startup.ts",
-    "./traffic": "./src/traffic.ts",
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/types/index.js"
+    },
+    "./startup": {
+      "types": "./lib/types/startup.d.ts",
+      "default": "./lib/types/startup.js"
+    },
+    "./traffic": {
+      "types": "./lib/types/traffic.d.ts",
+      "default": "./lib/types/traffic.js"
+    },
+    "./src/*": "./src/*",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
   },
@@ -38,5 +48,10 @@
     "@deepseek-ai/dsh-agent-default-model": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^"
-  }
+  },
+  "files": [
+    "lib/types/**/*.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml"
+  ]
 }
