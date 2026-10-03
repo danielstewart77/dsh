@@ -11,7 +11,7 @@ import type { FsInfo, FsTarget, FsWriteIntent } from '@deepseek-ai/dsh-fs'
 import { sandboxDenialMarker } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox'
 import type { SandboxPolicyService } from '@deepseek-ai/dsh-sandbox-policy'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, ToolArgsError } from '@deepseek-ai/dsh-tools'
 import type { ToolCallView, ToolRunContext } from '@deepseek-ai/dsh-tools'
 
 const TRUNCATED_MESSAGE = '<response clipped><NOTE>To save on context only part of this file has been shown to you. You should retry this tool after you have searched inside the file with `grep -n` in order to find the line numbers of what you are looking for.</NOTE>'
@@ -369,15 +369,61 @@ interface ResolvedConfig {
   description: string
 }
 
-function presentEditorCall(args: {
-  command: 'view' | 'create' | 'str_replace' | 'insert'
-  path: string
+/**
+ * The arguments as a model may actually send them: either spelling of the path,
+ * and the command optional.
+ *
+ * A model emits the names its training put in it. Measured on a real run, one
+ * sent `file_path` and `file_text` to this tool six times and was refused six
+ * times, because this tool spells the path `path`. So both spellings are
+ * declared, and an omitted `command` is inferred from the arguments that did
+ * arrive — an overload, never a translation layer, because a tool the model can
+ * call is the only thing the model can use.
+ */
+interface EditorArgs {
+  command?: 'view' | 'create' | 'str_replace' | 'insert'
+  path?: string
+  file_path?: string
   file_text?: string
   insert_line?: number
   new_str?: string
   old_str?: string
-}): ToolCallView {
-  switch (args.command) {
+}
+
+/**
+ * The path under whichever spelling the call used.
+ * @param args - the raw tool arguments.
+ * @returns the path.
+ * @throws ToolArgsError when neither spelling arrived. Coded, because only a
+ *   HarnessError's code reaches `result.error.info`, and a result without one is
+ *   logged with no error field and tallied as a successful call.
+ */
+function editorPath(args: EditorArgs): string {
+  const value = args.path ?? args.file_path
+  if (value === undefined || value.trim().length === 0) {
+    throw new ToolArgsError(['missing required property "path"'])
+  }
+  return value
+}
+
+/**
+ * The command the call asked for, inferred when it named none.
+ * @param args - the raw tool arguments.
+ * @returns the command to run.
+ */
+function editorCommand(args: EditorArgs): 'view' | 'create' | 'str_replace' | 'insert' {
+  if (args.command !== undefined) return args.command
+  if (args.old_str !== undefined) return 'str_replace'
+  if (args.insert_line !== undefined) return 'insert'
+  if (args.file_text !== undefined) return 'create'
+  return 'view'
+}
+
+function presentEditorCall(raw: EditorArgs): ToolCallView {
+  // Replay hands back the logged arguments, which may name neither path nor
+  // command; the card still has to render rather than throw.
+  const args = { ...raw, path: raw.path ?? raw.file_path ?? '' }
+  switch (editorCommand(args)) {
     case 'view':
       return {
         card: 'generic',
@@ -425,14 +471,16 @@ function registerStrReplaceEditor(ctx: Context, config: ResolvedConfig): void {
     parameters: {
       command: {
         type: 'string',
-        required: true,
         enum: ['view', 'create', 'str_replace', 'insert'],
-        description: 'The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`.',
+        description: 'The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`. Inferred from the other arguments when omitted.',
       },
       path: {
         type: 'string',
-        required: true,
-        description: 'Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`.',
+        description: 'Absolute path to file or directory, e.g. `/repo/file.py` or `/repo`. Required, under this name or as `file_path`.',
+      },
+      file_path: {
+        type: 'string',
+        description: 'Accepted alias of `path`.',
       },
       file_text: {
         type: 'string',
@@ -461,16 +509,17 @@ function registerStrReplaceEditor(ctx: Context, config: ResolvedConfig): void {
       render: (_args, value) => [{ type: 'text', text: value }],
     },
     async execute(args, exec) {
-      switch (args.command) {
+      const path = editorPath(args)
+      switch (editorCommand(args)) {
         case 'view':
-          return viewPath(ctx, args.path, args.view_range, config.maxOutputChars, exec)
+          return viewPath(ctx, path, args.view_range, config.maxOutputChars, exec)
         case 'create':
-          return createFile(ctx, policy, args.path, args.file_text, exec)
+          return createFile(ctx, policy, path, args.file_text, exec)
         case 'str_replace':
           return replaceInFile(
             ctx,
             policy,
-            args.path,
+            path,
             args.old_str,
             args.new_str,
             exec,
@@ -479,7 +528,7 @@ function registerStrReplaceEditor(ctx: Context, config: ResolvedConfig): void {
           return insertInFile(
             ctx,
             policy,
-            args.path,
+            path,
             args.insert_line,
             args.new_str,
             exec,
