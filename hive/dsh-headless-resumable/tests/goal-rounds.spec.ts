@@ -175,7 +175,7 @@ describe('a dispatch told to stop at the first refused call', () => {
       turn,
       step: 1,
       message: { role: 'tool', content: [], source: { kind: 'tool', callId: `call-${turn}` } },
-      error: { code: 'UNKNOWN_TOOL', message: 'no tool named str_replace' },
+      error: { name: 'UnknownToolError', code: 'UNKNOWN_TOOL', message: 'no tool named str_replace' },
     }, { surfaceOp: 'append' })
     live.append('step/end', { turn, step: 1 })
     live.append('turn/end', { turn, reason: { kind: 'completed' } })
@@ -191,13 +191,14 @@ describe('a dispatch told to stop at the first refused call', () => {
       sessionId: 'conv-stop',
       mode: 'create',
       goalRounds: 30,
-      stopOnDialectGap: true,
+      stopOnFailedCall: true,
     })
 
     expect(report.turns).toBeLessThan(3)
-    expect(report.error?.code).toBe('STOPPED_ON_DIALECT_GAP')
+    expect(report.error?.code).toBe('STOPPED_ON_FAILED_CALL')
     // The report names the call as the model spelled it, which is the fix.
     expect(report.error?.message).toContain('str_replace(old_str)')
+    expect(report.error?.message).toContain('at the harness')
     expect(report.error?.message).toContain('UNKNOWN_TOOL')
     await test.ctx.fiber.dispose()
   })
@@ -221,27 +222,30 @@ describe('a dispatch told to stop at the first refused call', () => {
       turn,
       step: 1,
       message: { role: 'tool', content: [], source: { kind: 'tool', callId: `call-${turn}` } },
-      error: { code: 'FS_EDIT_NOT_FOUND', message: 'no match for "## Status"' },
+      error: { name: 'FsError', code: 'FS_EDIT_NOT_FOUND', message: 'no match for "## Status"' },
     }, { surfaceOp: 'append' })
     live.append('step/end', { turn, step: 1 })
     live.append('turn/end', { turn, reason: { kind: 'completed' } })
   }
 
-  it('drives every round through a tool that failed at its own job', async () => {
+  it('ends the run on a tool that ran and failed, saying so was the tool', async () => {
     const test = await bench(failingTurn as never)
-    test.ctx.provide('goals', drivingGoals('build the app', 3, 3) as never)
+    // The driver would happily open thirty more rounds.
+    test.ctx.provide('goals', drivingGoals('build the app', 30, 99) as never)
 
     const { report } = await test.run({
       task: 'build the app',
-      sessionId: 'conv-domain-failure',
+      sessionId: 'conv-tool-failure',
       mode: 'create',
-      goalRounds: 3,
-      stopOnDialectGap: true,
+      goalRounds: 30,
+      stopOnFailedCall: true,
     })
 
-    expect(report.goalPhase).toBe('complete')
-    expect(report.traffic.failed).toBeGreaterThan(1)
-    expect(report.error?.code).toBeUndefined()
+    expect(report.turns).toBeLessThan(3)
+    expect(report.error?.code).toBe('STOPPED_ON_FAILED_CALL')
+    expect(report.error?.message).toContain('at the tool')
+    // What the tool said is the fix, so the report quotes it.
+    expect(report.error?.message).toContain('no match for')
     await test.ctx.fiber.dispose()
   })
 

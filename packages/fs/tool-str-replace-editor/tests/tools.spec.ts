@@ -242,6 +242,19 @@ describe('tool-str-replace-editor', () => {
     expect(await readFile(sample, 'utf8')).toBe('fresh')
   })
 
+  // Measured on a real run: one model sent `create` with a path and no
+  // `file_text` four times, for module stubs it meant to fill in later, and was
+  // refused four times. An empty file is what it asked for.
+  it('creates an empty file when create names no file_text', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'stub.py')
+
+    const created = await call(ctx, owner, { command: 'create', file_path: sample })
+
+    expect(created.isError).toBe(false)
+    expect(await readFile(sample, 'utf8')).toBe('')
+  })
+
   it('replaces text when the call names no command at all', async () => {
     const { ctx, root, owner } = await setup()
     const sample = join(root, 'inferred.txt')
@@ -443,7 +456,6 @@ describe('tool-str-replace-editor', () => {
       { command: 'view', path: threeLines, view_range: [1, 99] },
       { command: 'view', path: threeLines, view_range: [2, 1] },
       { command: 'view', path: directory, view_range: [1, 1] },
-      { command: 'create', path: join(root, 'new.txt') },
       { command: 'create', path: ambiguous, file_text: 'overwrite' },
       { command: 'str_replace', path: ambiguous, new_str: 'x' },
       { command: 'str_replace', path: ambiguous, old_str: '', new_str: 'x' },

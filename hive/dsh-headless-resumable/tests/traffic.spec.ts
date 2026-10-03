@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-import { firstDialectRefusal, toolTraffic } from '../src/traffic.ts'
+import { firstFailedCall, toolTraffic } from '../src/traffic.ts'
 
 let seq = 0
 function event<T extends SessionEvent['type']>(type: T, data: unknown): SessionEvent {
@@ -16,7 +16,7 @@ function call(callId: string, name: string, args = '{}'): SessionEvent {
 }
 
 // A result names its own call on the message, the way the agent loop writes it.
-function result(callId: string, error?: { name: string; code: string }): SessionEvent {
+function result(callId: string, error?: { name: string; code: string; message?: string }): SessionEvent {
   return event('tool/result', {
     turn: 1,
     step: 1,
@@ -143,65 +143,92 @@ describe('tool traffic', () => {
   })
 })
 
-describe('the first dialect refusal', () => {
-  it('reports a call the harness refused for arguments it would not take', () => {
+describe('the first failed call', () => {
+  it('names the harness as the origin when the arguments were refused', () => {
     const events = [
       call('a', 'read', '{"file_path":"/app/db.py"}'),
       result('a'),
       call('b', 'bash', '{"command":"pytest"}'),
-      result('b', { name: 'ToolArgsError', code: 'INVALID_ARGS' }),
+      result('b', { name: 'ToolArgsError', code: 'INVALID_ARGS', message: 'invalid arguments: command' }),
     ]
 
-    const refusal = firstDialectRefusal(events, 0)
-
-    expect(refusal).toEqual({
+    expect(firstFailedCall(events, 0)).toEqual({
       name: 'bash',
       parameters: ['command'],
       code: 'INVALID_ARGS',
       errorName: 'ToolArgsError',
+      origin: 'harness',
+      message: 'invalid arguments: command',
     })
   })
 
-  it('reports a call naming a tool the harness does not have', () => {
+  it('names the harness as the origin for a tool it does not have', () => {
     const events = [
-      call('a', 'str_replace', '{"old_str":"a","new_str":"b"}'),
-      result('a', { name: 'UnknownToolError', code: 'UNKNOWN_TOOL' }),
+      call('a', 'str_replace', '{"old_str":"a"}'),
+      result('a', { name: 'UnknownToolError', code: 'UNKNOWN_TOOL', message: 'no tool named str_replace' }),
     ]
 
-    expect(firstDialectRefusal(events, 0)?.code).toBe('UNKNOWN_TOOL')
+    expect(firstFailedCall(events, 0)?.origin).toBe('harness')
   })
 
-  it('passes over a tool that failed for its own reason, so the run carries on', () => {
+  it('stops on a tool that ran and failed, naming the tool as the origin', () => {
     const events = [
       call('a', 'str_replace_editor', '{"file_path":"/app/notes.md","old_str":"## Status"}'),
-      result('a', { name: 'FsError', code: 'FS_EDIT_NOT_FOUND' }),
-      call('b', 'read', '{"file_path":"/app/gone.py"}'),
-      result('b', { name: 'FsError', code: 'FS_NOT_FOUND' }),
-      call('c', 'bash', '{"command":"pytest"}'),
-      result('c', { name: 'ShellError', code: 'SHELL_EXIT' }),
+      result('a', { name: 'FsError', code: 'FS_EDIT_NOT_FOUND', message: 'no match for "## Status"' }),
     ]
 
-    expect(firstDialectRefusal(events, 0)).toBeUndefined()
+    const failure = firstFailedCall(events, 0)
+
+    expect(failure?.origin).toBe('tool')
+    expect(failure?.code).toBe('FS_EDIT_NOT_FOUND')
   })
 
-  it('finds the dialect refusal that lands after an ordinary failure', () => {
+  it('carries what the failure said, which is usually the whole fix', () => {
     const events = [
-      call('a', 'read', '{"file_path":"/app/gone.py"}'),
-      result('a', { name: 'FsError', code: 'FS_NOT_FOUND' }),
-      call('b', 'glob', '{"pattern":"**/*.py"}'),
-      result('b', { name: 'ToolArgsError', code: 'INVALID_ARGS' }),
+      call('a', 'str_replace_editor', '{"command":"create","file_path":"/app/stub.py"}'),
+      result('a', {
+        name: 'Error',
+        code: 'TOOL_FAILED',
+        message: 'Parameter `file_text` is required for command: create',
+      }),
     ]
 
-    expect(firstDialectRefusal(events, 0)?.name).toBe('glob')
+    expect(firstFailedCall(events, 0)?.message).toContain('`file_text` is required')
+  })
+
+  it('trims a message long enough to be a file, since the report is one line', () => {
+    const events = [
+      call('a', 'read', '{"file_path":"/app/db.py"}'),
+      result('a', { name: 'FsError', code: 'FS_TOO_LARGE', message: 'x'.repeat(5000) }),
+    ]
+
+    expect(firstFailedCall(events, 0)?.message.length).toBe(400)
+  })
+
+  it('reports the first failure, not a later one', () => {
+    const events = [
+      call('a', 'read', '{"file_path":"/app/gone.py"}'),
+      result('a', { name: 'FsError', code: 'FS_NOT_FOUND', message: 'not found' }),
+      call('b', 'glob', '{"pattern":"**/*.py"}'),
+      result('b', { name: 'ToolArgsError', code: 'INVALID_ARGS', message: 'invalid' }),
+    ]
+
+    expect(firstFailedCall(events, 0)?.name).toBe('read')
   })
 
   it('looks at this turn only, so a resumed conversation does not stop on its history', () => {
     const history = [
       call('old', 'bash', '{"command":"ls"}'),
-      result('old', { name: 'ToolArgsError', code: 'INVALID_ARGS' }),
+      result('old', { name: 'ToolArgsError', code: 'INVALID_ARGS', message: 'invalid' }),
     ]
     const mine = [call('new', 'read', '{"file_path":"/app/db.py"}'), result('new')]
 
-    expect(firstDialectRefusal([...history, ...mine], mine[0]!.seq)).toBeUndefined()
+    expect(firstFailedCall([...history, ...mine], mine[0]!.seq)).toBeUndefined()
+  })
+
+  it('reports nothing while every result has come back clean', () => {
+    const events = [call('a', 'read', '{"file_path":"/app/db.py"}'), result('a')]
+
+    expect(firstFailedCall(events, 0)).toBeUndefined()
   })
 })

@@ -37,4 +37,4 @@
         mode: !!js ctx.resumableHeadlessStartup.mode
         goalRounds: !!js ctx.resumableHeadlessStartup.goalRounds
         goalObjective: !!js ctx.resumableHeadlessStartup.goalObjective
-        stopOnDialectGap: !!js ctx.resumableHeadlessStartup.stopOnDialectGap
+        stopOnFailedCall: !!js ctx.resumableHeadlessStartup.stopOnFailedCall

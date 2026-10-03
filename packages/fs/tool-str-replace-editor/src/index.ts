@@ -243,7 +243,11 @@ async function createFile(
   fileText: string | undefined,
   exec: ToolRunContext,
 ): Promise<string> {
-  const content = requiredForCommand(fileText, 'file_text', 'create')
+  // A `create` naming only a path is a coherent request — it is what `touch`
+  // does — so it makes an empty file rather than being refused. Measured on a
+  // real run, one model sent exactly that four times for module stubs it meant
+  // to fill in later, and four refusals bought nothing.
+  const content = fileText ?? ''
   const sandboxPolicy = policy.resolve(exec)
   const target = await resolveTarget(ctx, path, exec.signal)
   if (await ctx.fs.stat(target, exec.signal) !== undefined) {

@@ -63,7 +63,7 @@ describe('the bundle patch that hands startup values to the runner', () => {
     // a field that only materializes sometimes is exactly the one a patch drops.
     const resolved = Object.keys(resolveInvocation([], {
       sessionId: 'abc', taskFile: 'task', goalRounds: '40', goalObjectiveFile: 'objective',
-      stopOnDialectGap: true,
+      stopOnFailedCall: true,
     }, () => 'text'))
 
     expect([...mapped].sort()).toEqual([...resolved].sort())
