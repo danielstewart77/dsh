@@ -705,13 +705,13 @@ describe('exit_plan_mode', () => {
     expect(result.content).toEqual([{ type: 'text', text: 'Error: exit_plan_mode requires a calling agent (no session to switch)' }])
   })
 
-  it('rejects a call outside plan mode while remaining advertised', async () => {
+  it('serves a call outside plan mode as the no-op it is', async () => {
     const ctx = await setup()
     const agent = await agentWithSession(ctx)
     expect(ctx.tools.schemas().map(tool => tool.name)).toContain(EXIT_PLAN_MODE)
     const result = await callExit(ctx, agent)
-    expect(result.isError).toBe(true)
-    expect(result.content).toEqual([{ type: 'text', text: 'Error: exit_plan_mode is only available in plan mode' }])
+    expect(result.isError).toBeFalsy()
+    expect(foldPlanMode(agent.session.events)).toBe(false)
   })
 
   it('rejects an empty or heading-less plan before asking the reviewer', async () => {
