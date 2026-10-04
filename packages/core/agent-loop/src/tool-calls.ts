@@ -14,7 +14,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import { assertNever, createToolResultMessage, type ToolCallBlock } from '@deepseek-ai/dsh-llm'
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
-import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolRunContext } from '@deepseek-ai/dsh-tools'
+import { TOOL_ABORTED_BEFORE_DISPATCH, TOOL_RUNTIME_SCHEDULER, type ToolExecutionInput, type ToolExecutionMode, type ToolExecutionResult, type ToolFailure, type ToolRunContext } from '@deepseek-ai/dsh-tools'
 
 /** One tool call after argument parsing, ready to schedule. */
 interface PlannedCall {
@@ -265,6 +265,25 @@ function appendToolCall(session: Session, turn: number, step: number, block: Too
 }
 
 /** Append a model-ordered result linked to its call event. */
+/** How much of a failure message is worth persisting on every failed call. */
+const MAX_DURABLE_FAILURE_MESSAGE = 2000
+
+/**
+ * The durable form of a tool failure: its class and code, plus what it said,
+ * trimmed because a tool that failed on a file can quote the file.
+ * @param failure - the execution's own failure record.
+ * @returns the error to persist on the `tool/result` event.
+ */
+function durableToolError(failure: ToolFailure): { name: string; code: string; message?: string } {
+  const info = failure.info
+  const said = failure.message.slice(0, MAX_DURABLE_FAILURE_MESSAGE)
+  return {
+    name: info?.name ?? 'Error',
+    code: info?.code ?? 'TOOL_FAILED',
+    ...said.length > 0 ? { message: said } : {},
+  }
+}
+
 function appendToolResult(
   session: Session,
   turn: number,
@@ -281,7 +300,10 @@ function appendToolResult(
   session.append('tool/result', {
     turn, step,
     message,
-    ...result.error?.info ? { error: result.error.info } : {},
+    // The message rides with the info rather than only in the model-facing
+    // content: a reader of the log — a run report, a traffic tally — sees the
+    // code and would otherwise have to re-derive what it meant.
+    ...result.error?.info ? { error: durableToolError(result.error) } : {},
     // The tool's private presentation payload (e.g. a result-time diff),
     // persisted so a UI bridge reproduces the card on replay.
     ...result.meta !== undefined ? { meta: result.meta } : {},

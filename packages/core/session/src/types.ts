@@ -292,7 +292,10 @@ export interface SessionEventMap {
     turn: number
     step: number
     message: ToolResultMessage
-    error?: { name: string; code: string }
+    // `message` is what the failure actually said, which is usually the whole
+    // fix: "`file_text` is required for command: create" names the gap, where
+    // INVALID_ARGS alone sends a reader to the session log to find out.
+    error?: { name: string; code: string; message?: string }
     meta?: JsonValue
   }
   /** Whole-list snapshot; latest write wins on replay. Log-only UI state; never derived history. */
