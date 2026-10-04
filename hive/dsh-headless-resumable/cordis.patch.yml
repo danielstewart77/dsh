@@ -16,6 +16,14 @@
 - id: hmr
   disabled: true
 
+# Every model this harness addresses is reached through the hive inference
+# proxy, so the native DeepSeek adapter is not merely unused here — it
+# registers its own provider route unconditionally, with no key or config
+# gating it, which makes "the proxy is this harness's one provider" false on
+# every surface that enumerates routes.
+- id: llm-deepseek
+  disabled: true
+
 # The harness's one provider. Every model this harness ever addresses is
 # reached through the hive inference proxy — never a vendor endpoint directly —
 # so the route is the harness's own fact and no profile declares it.
