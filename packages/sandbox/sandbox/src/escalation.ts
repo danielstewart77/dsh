@@ -52,6 +52,20 @@ export const ESCALATION_TARGETS: readonly SandboxMode[] = ['workspace-write', 'd
 const ESCALATION_ARGS_CODE = 'INVALID_ARGS'
 
 /**
+ * The code an escalation refused by the approval path is reported under.
+ *
+ * Separate from {@link ESCALATION_ARGS_CODE} because nothing is wrong with the
+ * harness: a person declined, or this composition has no channel to ask
+ * through. Reporting it as a harness gap wakes whoever maintains the harness
+ * about a decision that was made correctly.
+ */
+const ESCALATION_APPROVAL_CODE = 'DENIED_BY_APPROVAL'
+
+/** The code for a capability the model asked for that this composition does not have. */
+export const UNSUPPORTED_CAPABILITY_CODE = 'UNSUPPORTED_CAPABILITY'
+
+
+/**
  * Validate the escalation argument pairing a tool schema cannot express:
  * `sandbox_permissions` asks for power and must say why, so it requires a
  * `justification`, and a justification offered at all must be a non-empty
@@ -176,13 +190,13 @@ export async function approveEscalation<A, C>(request: EscalationRequest, approv
   // deliberately not a schema constraint (the enum is the closed target
   // vocabulary; the effective mode is per-call truth).
   if (!(WIDER_MODES[effectiveMode] ?? []).includes(mode as SandboxMode)) {
-    throw new Error(`sandbox escalation to "${mode}" is not strictly wider than this call's current "${effectiveMode}" mode`)
+    throw new HarnessError(`sandbox escalation to "${mode}" is not strictly wider than this call's current "${effectiveMode}" mode`, ESCALATION_ARGS_CODE)
   }
   if (approval.approver === undefined) {
-    throw new Error(`sandbox escalation to "${mode}" requires approval, but no approval service is composed`)
+    throw new HarnessError(`sandbox escalation to "${mode}" requires approval, but no approval service is composed`, ESCALATION_APPROVAL_CODE)
   }
   if (approval.agent === undefined) {
-    throw new Error(`sandbox escalation to "${mode}" requires approval, but the call has no agent to route it through`)
+    throw new HarnessError(`sandbox escalation to "${mode}" requires approval, but the call has no agent to route it through`, ESCALATION_APPROVAL_CODE)
   }
   // Self-contained for the audit trail: approval/asked stores this reason,
   // and the target mode is part of the grant's identity.
@@ -197,9 +211,9 @@ export async function approveEscalation<A, C>(request: EscalationRequest, approv
     // The schema enum already pinned `mode` to the closed target vocabulary;
     // the check above proved it is strictly wider.
     case 'allowed-once': return mode as SandboxMode
-    case 'rejected': throw new Error(`the user rejected escalating this ${subject} to "${mode}"`)
-    case 'cancelled': throw new Error(`approval for escalating to "${mode}" was cancelled`)
-    case 'unavailable': throw new Error(`sandbox escalation to "${mode}" requires approval, but no approval channel is available`)
+    case 'rejected': throw new HarnessError(`the user rejected escalating this ${subject} to "${mode}"`, ESCALATION_APPROVAL_CODE)
+    case 'cancelled': throw new HarnessError(`approval for escalating to "${mode}" was cancelled`, ESCALATION_APPROVAL_CODE)
+    case 'unavailable': throw new HarnessError(`sandbox escalation to "${mode}" requires approval, but no approval channel is available`, ESCALATION_APPROVAL_CODE)
     default: return assertNever(outcome, 'EscalationOutcome')
   }
 }

@@ -497,6 +497,18 @@ export const TOOL_BLOCKED_AFTER_EXECUTE = 'BLOCKED_AFTER_EXECUTE'
 /** Error class reported on both policy refusals, so the log names the side that refused. */
 export const TOOL_REFUSAL_ERROR_NAME = 'ToolRefused'
 
+/**
+ * Canonical error code for a call an approval channel declined: the user said
+ * no, cancelled the prompt, or there was no channel to ask through.
+ *
+ * Deliberately not {@link TOOL_DENIED_BY_POLICY}. A policy declining a call is
+ * a gap in the harness's configuration and somebody should widen it; a person
+ * pressing Escape is the system working. Folding the two together pages whoever
+ * maintains the harness about a keystroke, and — worse — spends that call
+ * shape's one report on it, so the real policy gap that follows is silenced.
+ */
+export const TOOL_DENIED_BY_APPROVAL = 'DENIED_BY_APPROVAL'
+
 /** Structured error metadata for a failed tool call (alongside the model-facing text). */
 export interface ToolErrorInfo {
   name: string
@@ -1512,6 +1524,11 @@ export class ToolRuntime extends Service {
       const denialReason = decision.kind === 'allow'
         ? this.guardReason(exec)
         : decision.reason
+      // A denial that came back from the approval channel is a person's answer,
+      // not a policy's. Only the latter is somebody's bug to fix.
+      const denialCode = gate.kind === 'ask' && decision.kind !== 'allow'
+        ? TOOL_DENIED_BY_APPROVAL
+        : TOOL_DENIED_BY_POLICY
       if (denialReason !== undefined) {
         return await next({
           kind: 'post-result',
@@ -1521,7 +1538,7 @@ export class ToolRuntime extends Service {
             isError: true,
             error: {
               message: denialReason,
-              info: { name: TOOL_REFUSAL_ERROR_NAME, code: TOOL_DENIED_BY_POLICY },
+              info: { name: TOOL_REFUSAL_ERROR_NAME, code: denialCode },
             },
           }),
         })

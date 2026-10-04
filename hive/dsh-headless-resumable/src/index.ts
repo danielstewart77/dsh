@@ -526,7 +526,7 @@ export function apply(ctx: Context, config: Config): void {
   // including a subagent's: a delegate refused the same tool for the same
   // reason is the same gap, and reporting it under its own conversation is
   // what makes one marker cover both.
-  const escalator = escalatorFromEnv(process.cwd())
+  const escalator = escalatorFromEnv(config.sessionId, process.cwd(), line => io.stderr.write(line))
   if (escalator !== undefined) {
     ctx.on('session/event', (session, event) => {
       const refusal = harnessRefusal(session, event)

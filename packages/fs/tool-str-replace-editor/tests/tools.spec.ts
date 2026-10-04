@@ -308,7 +308,7 @@ describe('tool-str-replace-editor', () => {
 
   it('says so plainly when the old_str first line is absent, without quoting the block', () => {
     // The block is long on purpose: the report must not carry it.
-    const absent = `${'# nowhere in the file\n'.repeat(50)}`
+    const absent = '# nowhere in the file\n'.repeat(50)
 
     return (async () => {
       const { ctx, root, owner } = await setup()

@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
+import { HarnessError } from '@deepseek-ai/dsh-llm'
 import {
   ESCALATION_TARGETS,
   WIDER_MODES,
@@ -45,6 +46,22 @@ describe('validateEscalationArgs', () => {
     expect(() => { validateEscalationArgs('workspace-write', undefined) }).toThrow(/requires a justification/)
     expect(() => { validateEscalationArgs('workspace-write', '   ') }).toThrow(/non-empty sentence/)
     expect(() => { validateEscalationArgs(undefined, '   ') }).toThrow(/non-empty sentence/)
+  })
+
+  // The durable `tool/result` keeps a code only off a HarnessError, so a plain
+  // Error thrown here lands on the log indistinguishable from a tool body that
+  // ran and failed at its job — which is how three refused `write` calls on a
+  // real run were tallied as successes.
+  it('refuses with a code, so the log can tell this from a tool failing at its job', () => {
+    let thrown: unknown
+    try {
+      validateEscalationArgs('workspace-write', undefined)
+    } catch (error: unknown) {
+      thrown = error
+    }
+
+    expect(thrown).toBeInstanceOf(HarnessError)
+    expect((thrown as HarnessError).code).toBe('INVALID_ARGS')
   })
 })
 

@@ -1,6 +1,6 @@
 /** Escalating a refused tool call to another mind, once, as it happens. */
 
-import { mkdtempSync, readdirSync, rmSync, unlinkSync } from 'node:fs'
+import { mkdtempSync, readFileSync, readdirSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -8,7 +8,7 @@ import type { Session, SessionEvent } from '@deepseek-ai/dsh-session'
 
 import { SessionId } from '@deepseek-ai/dsh-session'
 
-import { Escalator, harnessRefusal, refusalKey } from '../src/escalate.ts'
+import { Escalator, commsSender, harnessRefusal, refusalKey } from '../src/escalate.ts'
 import type { EscalationMessage } from '../src/escalate.ts'
 import { bench } from './support.ts'
 import type { Script } from './support.ts'
@@ -81,6 +81,7 @@ function escalator(dir: string, send: ReturnType<typeof recorder>['send'], recip
     senderMindId: CYPHER,
     senderName: 'cypher',
     markerDir: dir,
+    conversationId: 'conv-1',
     cwd: '/app/build',
     send,
     timeoutMs: 50,
@@ -104,14 +105,18 @@ describe('what counts as a harness refusal', () => {
     expect(harnessRefusal(session('c', threw), threw[1] as SessionEvent)).toBeUndefined()
   })
 
-  it('names the call off the tool/call it closes, not off the result', () => {
+  it('names the call off the tool/call it closes, not off the newest one', () => {
+    // The refused call is emitted FIRST and a later call follows it, which is
+    // the ordinary shape of a parallel step. A lookup that took the newest
+    // tool/call, or any call at all, would report the wrong tool's name and
+    // argument names — and key the marker on them.
     const events = [
-      call('a', 'read', '{"file_path":"/x"}'),
-      call('b', 'write_file', '{"path":"/y","body":"z"}'),
-      coded('b', 'UNKNOWN_TOOL', 'unknown tool "write_file"'),
+      call('a', 'write_file', '{"path":"/y","body":"z"}'),
+      coded('a', 'UNKNOWN_TOOL', 'unknown tool "write_file"'),
+      call('b', 'read', '{"file_path":"/x"}'),
     ]
 
-    expect(harnessRefusal(session('conv-9', events), events[2] as SessionEvent)).toEqual({
+    expect(harnessRefusal(session('conv-9', events), events[1] as SessionEvent)).toEqual({
       tool: 'write_file',
       parameters: ['path', 'body'],
       code: 'UNKNOWN_TOOL',
@@ -119,6 +124,24 @@ describe('what counts as a harness refusal', () => {
       message: 'unknown tool "write_file"',
       sessionId: 'conv-9',
     })
+  })
+
+  it('reports a refusal whose call is not on the session rather than dropping it', () => {
+    const orphan = coded('gone', 'DENIED_BY_POLICY', 'declined')
+
+    expect(harnessRefusal(session('conv-9', [orphan]), orphan)).toMatchObject({
+      tool: 'unnamed',
+      parameters: [],
+      code: 'DENIED_BY_POLICY',
+    })
+  })
+
+  it('does not report a person declining, or a tool rejecting its own arguments', () => {
+    const asked = [call('a', 'write', '{"file_path":"/x"}'), coded('a', 'DENIED_BY_APPROVAL', 'the user rejected tool "write"')]
+    const fussy = [call('b', 'edit', '{"file_path":"/x","old_string":"y"}'), coded('b', 'TOOL_REJECTED_ARGS', 'old_string and new_string are identical')]
+
+    expect(harnessRefusal(session('c', asked), asked[1] as SessionEvent)).toBeUndefined()
+    expect(harnessRefusal(session('c', fussy), fussy[1] as SessionEvent)).toBeUndefined()
   })
 })
 
@@ -215,6 +238,48 @@ describe('reporting one gap once', () => {
     expect(gateway.sent).toHaveLength(1)
   })
 
+  it('reports two tools separately when only the tool differs', async () => {
+    const gateway = recorder()
+    const escalate = escalator(markerDir(), gateway.send)
+
+    escalate.report(policyDenial('write', '{"file_path":"/x","content":"y"}'))
+    escalate.report(policyDenial('edit', '{"file_path":"/x","content":"y"}'))
+    await escalate.drain()
+
+    expect(gateway.sent.map(message => message.metadata['tool'])).toEqual(['write', 'edit'])
+  })
+
+  it('reports the same tool and code again when the refusal itself differs', async () => {
+    const gateway = recorder()
+    const escalate = escalator(markerDir(), gateway.send)
+    const refused = (said: string) => {
+      const events = [call('a', 'bash', '{"command":"x"}'), coded('a', 'DENIED_BY_POLICY', said)]
+      return harnessRefusal(session('conv-1', events), events[1] as SessionEvent) as never
+    }
+
+    // One tool, one argument name, one code, two entirely different fixes.
+    escalate.report(refused('command rm is not permitted'))
+    escalate.report(refused('network access is not permitted'))
+    await escalate.drain()
+
+    expect(gateway.sent).toHaveLength(2)
+  })
+
+  it('treats one gap whose text differs only in its numbers as one gap', async () => {
+    const gateway = recorder()
+    const escalate = escalator(markerDir(), gateway.send)
+    const refused = (said: string) => {
+      const events = [call('a', 'write', '{"file_path":"/x"}'), coded('a', 'INVALID_ARGS', said)]
+      return harnessRefusal(session('conv-1', events), events[1] as SessionEvent) as never
+    }
+
+    escalate.report(refused('invalid arguments: content[0] is not a string'))
+    escalate.report(refused('invalid arguments: content[7] is not a string'))
+    await escalate.drain()
+
+    expect(gateway.sent).toHaveLength(1)
+  })
+
   it('reports the same tool again when the code differs', async () => {
     const gateway = recorder()
     const escalate = escalator(markerDir(), gateway.send)
@@ -257,6 +322,75 @@ describe('reporting one gap once', () => {
     expect(readdirSync(dir)).toEqual([`${refusalKey(refusal as never)}.json`])
   })
 
+  it('writes the gap into the marker so a mind can find the one it just fixed', async () => {
+    const dir = markerDir()
+    const gateway = recorder()
+    const escalate = escalator(dir, gateway.send)
+
+    escalate.report(policyDenial())
+    await escalate.drain()
+
+    const key = refusalKey(policyDenial())
+    const held = JSON.parse(readFileSync(join(dir, `${key}.json`), 'utf8')) as Record<string, unknown>
+    expect(held).toMatchObject({
+      marker: key,
+      tool: 'write',
+      parameters: ['file_path', 'content'],
+      code: 'DENIED_BY_POLICY',
+      message: 'write denied by sandbox policy',
+      cwd: '/app/build',
+      mind: 'cypher',
+      delivered: true,
+    })
+  })
+
+  it('leaves a claim it never delivered saying so, rather than claiming it reported', () => {
+    const dir = markerDir()
+    // A send that neither resolves nor rejects: the shape an interrupt between
+    // the claim and the answer leaves behind.
+    const escalate = new Escalator({
+      recipientMindId: SKIPPY,
+      senderMindId: CYPHER,
+      senderName: 'cypher',
+      markerDir: dir,
+      conversationId: 'conv-1',
+      cwd: '/app/build',
+      timeoutMs: 50,
+      send: () => new Promise(() => {}),
+    })
+
+    escalate.report(policyDenial())
+
+    const held = JSON.parse(readFileSync(join(dir, `${refusalKey(policyDenial())}.json`), 'utf8')) as Record<string, unknown>
+    expect(held['delivered']).toBe(false)
+  })
+
+  it('reports every occurrence rather than none when the escalation path is a file', async () => {
+    const dir = markerDir()
+    const blocked = join(dir, 'escalations')
+    writeFileSync(blocked, 'not a directory')
+    const gateway = recorder()
+    const escalate = escalator(blocked, gateway.send)
+
+    escalate.report(policyDenial())
+    await escalate.drain()
+
+    expect(gateway.sent).toHaveLength(1)
+  })
+
+  it('bounds that repetition to once per gap while the process lives', async () => {
+    const dir = markerDir()
+    const blocked = join(dir, 'escalations')
+    writeFileSync(blocked, 'not a directory')
+    const gateway = recorder()
+    const escalate = escalator(blocked, gateway.send)
+
+    for (let round = 0; round < 5; round += 1) escalate.report(policyDenial())
+    await escalate.drain()
+
+    expect(gateway.sent).toHaveLength(1)
+  })
+
   it('still suppresses the repeat when the escalation directory did not exist', async () => {
     const gateway = recorder()
     const escalate = escalator(join(markerDir(), 'not', 'yet'), gateway.send)
@@ -267,6 +401,67 @@ describe('reporting one gap once', () => {
     await escalate.drain()
 
     expect(gateway.sent).toHaveLength(1)
+  })
+})
+
+describe('the transport that decides whether it landed', () => {
+  const realFetch = globalThis.fetch
+  afterEach(() => { globalThis.fetch = realFetch })
+
+  it('posts the message to the broker and reports a 2xx as delivered', async () => {
+    const seen: { url: string; method: string | undefined; body: unknown; auth: string | null }[] = []
+    globalThis.fetch = (async (url: string | URL, init?: RequestInit) => {
+      seen.push({
+        url: String(url),
+        method: init?.method,
+        body: JSON.parse(String(init?.body)),
+        auth: new Headers(init?.headers).get('authorization'),
+      })
+      return new Response('{}', { status: 200 })
+    }) as typeof globalThis.fetch
+    const body = { from_mind: CYPHER, to_mind: SKIPPY, conversation_id: 'c', content: 'x', metadata: {} }
+
+    // A trailing slash on the configured URL must not double up on the path.
+    const outcome = await commsSender('http://comms.invalid:8426/', 'tok')(body, AbortSignal.timeout(50))
+
+    expect(outcome).toEqual({ ok: true })
+    expect(seen).toEqual([{
+      url: 'http://comms.invalid:8426/broker/messages',
+      method: 'POST',
+      body,
+      auth: 'Bearer tok',
+    }])
+  })
+
+  it('reports the broker refusing an unresolvable recipient as not delivered', async () => {
+    // The broker answers 404 for a to_mind it cannot resolve. A transport that
+    // read only "no exception thrown" would call that a delivery, and the claim
+    // kept over it would silence the gap permanently.
+    globalThis.fetch = (async () => new Response(
+      '{"error":"Mind \'skippy\' not found in broker.minds."}', { status: 404 },
+    )) as typeof globalThis.fetch
+
+    const outcome = await commsSender('http://comms.invalid:8426', undefined)(
+      { from_mind: CYPHER, to_mind: 'skippy', conversation_id: 'c', content: 'x', metadata: {} },
+      AbortSignal.timeout(50),
+    )
+
+    expect(outcome).toEqual({ ok: false })
+  })
+
+  it('sends no authorization header when this mind holds no service token', async () => {
+    let auth: string | null = 'unset'
+    globalThis.fetch = (async (_url: string | URL, init?: RequestInit) => {
+      auth = new Headers(init?.headers).get('authorization')
+      return new Response('{}', { status: 200 })
+    }) as typeof globalThis.fetch
+
+    await commsSender('http://comms.invalid:8426', undefined)(
+      { from_mind: CYPHER, to_mind: SKIPPY, conversation_id: 'c', content: 'x', metadata: {} },
+      AbortSignal.timeout(50),
+    )
+
+    expect(auth).toBeNull()
   })
 })
 
@@ -303,6 +498,34 @@ describe('a gateway that does not take the message', () => {
     expect(working.sent).toHaveLength(1)
   })
 
+  it('waits for a send still in flight, so a one-shot run cannot exit mid-message', async () => {
+    const answered: string[] = []
+    const held = Promise.withResolvers<{ ok: boolean }>()
+    const escalate = new Escalator({
+      recipientMindId: SKIPPY,
+      senderMindId: CYPHER,
+      senderName: 'cypher',
+      markerDir: markerDir(),
+      conversationId: 'conv-1',
+      cwd: '/app/build',
+      timeoutMs: 500,
+      send: async () => {
+        const outcome = await held.promise
+        answered.push('sent')
+        return outcome
+      },
+    })
+
+    escalate.report(policyDenial())
+    // Nothing has reached the gateway yet, which is the state an undrained
+    // process would exit in.
+    expect(answered).toEqual([])
+    setTimeout(() => { held.resolve({ ok: true }) }, 20)
+    await escalate.drain()
+
+    expect(answered).toEqual(['sent'])
+  })
+
   it('hands the send a deadline, so one that never answers cannot hold the run', async () => {
     const hanging: AbortSignal[] = []
     const escalate = new Escalator({
@@ -310,6 +533,7 @@ describe('a gateway that does not take the message', () => {
       senderMindId: CYPHER,
       senderName: 'cypher',
       markerDir: markerDir(),
+      conversationId: 'conv-1',
       cwd: '/app/build',
       timeoutMs: 20,
       send: async (_body, signal) => {
@@ -395,7 +619,15 @@ describe('the escalation a real run sends', () => {
       to_mind: SKIPPY,
       from_mind: CYPHER,
       conversation_id: 'conv-refused',
-      metadata: { tool: 'write', code: 'DENIED_BY_POLICY', request_type: 'harness_refusal' },
+      metadata: {
+        tool: 'write',
+        code: 'DENIED_BY_POLICY',
+        request_type: 'harness_refusal',
+        // Sourced here and nowhere else: the mind's own name off its
+        // environment, and the directory the process is actually running in.
+        mind: 'cypher',
+        cwd: process.cwd(),
+      },
     })
     expect(readdirSync(dir)).toHaveLength(1)
     await test.ctx.fiber.dispose()
@@ -413,6 +645,21 @@ describe('the escalation a real run sends', () => {
 
     expect(posts).toBe(0)
     expect(report.traffic.failed).toBe(1)
+    await test.ctx.fiber.dispose()
+  })
+
+  it('says so on stderr when it is told to escalate but cannot reach a gateway', async () => {
+    process.env.DSH_ESCALATE_TO_MIND_ID = SKIPPY
+    process.env.MIND_ID = CYPHER
+    delete process.env.COMMS_URL
+    let posts = 0
+    globalThis.fetch = (async () => { posts += 1; return new Response('{}', { status: 200 }) }) as typeof globalThis.fetch
+
+    const test = await bench(refusedTurn)
+    const { err } = await test.run({ task: 'build the app', sessionId: 'conv-nogw', mode: 'create' })
+
+    expect(posts).toBe(0)
+    expect(err).toContain('DSH_ESCALATE_TO_MIND_ID is set but COMMS_URL or MIND_ID is not')
     await test.ctx.fiber.dispose()
   })
 })

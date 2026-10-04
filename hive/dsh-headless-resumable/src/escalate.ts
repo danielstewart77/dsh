@@ -12,10 +12,21 @@
  *
  * Only the harness's own refusals travel. A tool body that ran and threw — an
  * empty `file_path`, an MCP server answering `isError` — is the model being bad
- * at its job, and waking another mind for it is a page nobody can action. Which
- * side refused is the `origin` on the failure, which is why every refusing path
- * in the harness now carries a code of its own rather than being recognised by
- * the absence of one.
+ * at its job, and waking another mind for it is a page nobody can action. Nor
+ * does a person declining an approval prompt travel, which is the system
+ * working rather than a gap in it. Which side refused is the `origin` on the
+ * failure, which is why every refusing path in the harness now carries a code
+ * of its own rather than being recognised by the absence of one.
+ *
+ * One class of noise gets through, knowingly. A tool that validates its own
+ * arguments raises the same `ToolArgsError` with the same `INVALID_ARGS` as the
+ * schema refusal before dispatch — `defineTool` runs the schema check as the
+ * first statement of the body (`tools/src/schema.ts`), so there is no position
+ * to tell them apart by either. `edit` refusing an `old_string` identical to
+ * its `new_string` therefore pages once. Splitting them means a second error
+ * class threaded through every tool that checks its own arguments, and the
+ * dedupe below bounds the cost at one message for the life of the marker, so
+ * the honest trade is to let it through and say so here.
  *
  * And it travels once. The second mind's job is to go and fix the harness, so a
  * gap reported every round would put several minds on one problem, each editing
@@ -27,7 +38,7 @@
  */
 
 import { createHash } from 'node:crypto'
-import { mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -52,6 +63,18 @@ export interface HarnessRefusal {
 }
 
 /**
+ * Longest tool name reported.
+ *
+ * `traffic.ts` caps the argument names and the failure text; the tool name was
+ * uncapped, and it is the one component guaranteed to be model-authored — a
+ * name the harness does not have is the primary trigger. A model malformed
+ * enough to ask for a tool that is not there is malformed enough to put a
+ * function body in the name position, and this rides in an HTTP body and a file
+ * on disk.
+ */
+const MAX_TOOL_NAME = 120
+
+/**
  * How long a send may take before it is abandoned.
  *
  * Node's `fetch` has no default timeout and a pending socket is a ref'd handle,
@@ -59,8 +82,12 @@ export interface HarnessRefusal {
  * run alive after its report has already been written and its exit code set.
  * The adapter then sees a finished report from a process that never exits,
  * which reads as a wedged mind rather than a wedged POST.
+ *
+ * Under the CLI's own force-exit fuse, deliberately. A deadline longer than
+ * that fuse is not a deadline: an interrupt force-exits the process first and
+ * the send is lost with a claim already on disk.
  */
-export const ESCALATION_TIMEOUT_MS = 10_000
+export const ESCALATION_TIMEOUT_MS = 4_000
 
 /** Characters of the key digest kept in a marker filename. */
 const KEY_LENGTH = 24
@@ -85,9 +112,33 @@ const KEY_LENGTH = 24
  * @param refusal - the refusal to key.
  * @returns the hex digest naming this refusal's marker.
  */
-export function refusalKey(refusal: Pick<HarnessRefusal, 'tool' | 'parameters' | 'code'>): string {
-  const tuple = [refusal.tool, [...refusal.parameters].sort().join('\u0000'), refusal.code].join('\u0000')
+export function refusalKey(refusal: Pick<HarnessRefusal, 'tool' | 'parameters' | 'code' | 'message'>): string {
+  const tuple = [
+    refusal.tool,
+    [...refusal.parameters].sort().join('\u0000'),
+    refusal.code,
+    stableReason(refusal.message),
+  ].join('\u0000')
   return createHash('sha256').update(tuple, 'utf8').digest('hex').slice(0, KEY_LENGTH)
+}
+
+/**
+ * What the refusal said, with the parts that vary between occurrences of one
+ * gap taken out.
+ *
+ * The text has to be in the key, because tool, argument names and code together
+ * do not identify a gap: `bash(command)` declined for naming `rm` and the same
+ * call declined for reaching the network are one key and two entirely different
+ * things to go and fix, so the second would be silenced by the first. But the
+ * text also carries per-occurrence detail — a schema violation names the index
+ * it failed at, a fence names the path — and keying on that raw would page the
+ * recipient once per round for one gap. Digits collapse to `#`, which is what
+ * nearly all of that detail is.
+ * @param message - the refusal text.
+ * @returns the text with its varying parts normalized away.
+ */
+function stableReason(message: string): string {
+  return message.replaceAll(/\d+/g, '#')
 }
 
 /**
@@ -110,7 +161,7 @@ export function harnessRefusal(session: Session, event: SessionEvent): HarnessRe
   const callId = callIdOf(data.message)
   const call = callId === undefined ? undefined : findCall(session, callId)
   return {
-    tool: call?.name ?? 'unnamed',
+    tool: (call?.name ?? 'unnamed').slice(0, MAX_TOOL_NAME),
     parameters: call?.parameters ?? [],
     code: failure.code,
     errorName: failure.name,
@@ -140,6 +191,16 @@ function findCall(session: Session, callId: string): { name: string; parameters:
 
 /** What an escalation needs in order to reach another mind. */
 export interface EscalationConfig {
+  /**
+   * The conversation every page is filed under.
+   *
+   * The gateway's own id, not the id of whichever session observed the refusal.
+   * A subagent's refusal is observed here too — correctly, it is the same gap —
+   * but its session id is harness-internal: no `sessions` row holds it and no
+   * surface can reach it, so a page filed there arrives in a thread nobody can
+   * reply into. The observed session is reported in the metadata instead.
+   */
+  conversationId: string
   /**
    * The recipient's `mind_id`. A UUID, not a name: the broker resolves a
    * recipient through `get_mind_by_id`, so a short name is a 404 and the
@@ -183,6 +244,22 @@ export function defaultMarkerDir(): string {
 export class Escalator {
   private readonly pending = new Set<Promise<void>>()
 
+  /**
+   * Keys this process reported and could NOT record on disk.
+   *
+   * A fallback, not a cache. The marker file is the authority, because deleting
+   * one is how a mind re-arms a gap it has fixed and an in-process memo would
+   * ignore that deletion for as long as the mind stays up. But when the
+   * escalation directory cannot be written at all, the file records nothing and
+   * every occurrence would page: a forty-round run emitting five refused calls
+   * a round sends two hundred pages off a full disk. So this holds exactly the
+   * keys with no marker behind them.
+   */
+  private readonly reported = new Set<string>()
+
+  /** This process's claim on a marker, so it never releases somebody else's. */
+  private readonly owner = `${process.pid}:${Math.random().toString(36).slice(2, 10)}`
+
   constructor(private readonly config: EscalationConfig) {}
 
   /**
@@ -199,10 +276,13 @@ export class Escalator {
     const recipient = this.config.recipientMindId
     if (recipient === undefined || recipient.trim().length === 0) return
     const key = refusalKey(refusal)
+    if (this.reported.has(key)) return
     // Claimed before the send, not after, because two runs sharing one
     // escalation directory would otherwise both read an absent marker and both
     // page the other mind for one gap. An exclusive create is the claim.
-    if (!this.claim(key, refusal)) return
+    const claim = this.claim(key, refusal)
+    if (claim === 'held-by-another') return
+    if (claim === 'unrecorded') this.reported.add(key)
     const work = this.send(recipient, refusal, key).finally(() => { this.pending.delete(work) })
     this.pending.add(work)
   }
@@ -223,8 +303,11 @@ export class Escalator {
       // A gateway that is up and refusing is as undelivered as one that is
       // down: the broker answers 404 for a recipient it cannot resolve, and a
       // claim kept over that would silence this gap permanently after a message
-      // nobody received.
-      if (!outcome.ok) this.release(key)
+      // nobody received. The converse — a gateway that took the message and
+      // then failed to say so — costs a duplicate page, which is the side of
+      // this trade worth being on.
+      if (outcome.ok) this.confirm(key)
+      else this.release(key)
     } catch {
       this.release(key)
     }
@@ -237,7 +320,7 @@ export class Escalator {
     return {
       from_mind: senderMindId,
       to_mind: recipient,
-      conversation_id: refusal.sessionId,
+      conversation_id: this.config.conversationId,
       content: `${senderName} asked the harness for ${call} and the harness refused it `
         + `with ${refusal.code} (${refusal.errorName}): ${refusal.message}\n\n`
         + `The call is the dialect the model was trained on and is not ours to change — `
@@ -271,11 +354,29 @@ export class Escalator {
    * @param refusal - the refusal, recorded inside the marker so a mind can read it.
    * @returns whether this process is the one that reports it.
    */
-  private claim(key: string, refusal: HarnessRefusal): boolean {
+  private claim(key: string, refusal: HarnessRefusal): 'recorded' | 'unrecorded' | 'held-by-another' {
     try {
       mkdirSync(this.config.markerDir, { recursive: true })
+    } catch (error: unknown) {
+      // `mkdirSync` with `recursive` throws EEXIST when the path exists and is
+      // NOT a directory, and that is indistinguishable from the exclusive
+      // create's EEXIST unless the syscall is checked. Read as "already
+      // claimed", a stray file at the escalation path turns escalation off for
+      // the life of the process with no message, no marker and no log line —
+      // every refusal skipped, every report downstream still looking normal.
+      // Any failure to establish the directory is reported rather than
+      // suppressed: repetition is recoverable and silence is not.
+      return 'unrecorded'
+    }
+    try {
       writeFileSync(this.markerPath(key), `${JSON.stringify({
         marker: key,
+        owner: this.owner,
+        // Written false and rewritten true once the gateway has taken it. The
+        // claim goes down before the send, so an interrupt in between leaves a
+        // marker with nothing delivered — and a marker that calls itself
+        // reported would be a lie a mind would act on.
+        delivered: false,
         tool: refusal.tool,
         parameters: refusal.parameters,
         code: refusal.code,
@@ -284,23 +385,45 @@ export class Escalator {
         session_id: refusal.sessionId,
         cwd: this.config.cwd,
         mind: this.config.senderName,
-        reported_at: new Date().toISOString(),
-      }, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' })
-      return true
+        claimed_at: new Date().toISOString(),
+      }, null, 2)}\n`, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      return 'recorded'
     } catch (error: unknown) {
       // Already claimed: somebody has reported this gap and nobody else should.
-      if ((error as { code?: string }).code === 'EEXIST') return false
-      // Any other failure is a directory we cannot write. Reporting a gap twice
-      // costs a duplicate message; not reporting it costs the run, so an
-      // unusable marker directory degrades to repetition rather than silence.
-      return true
+      if ((error as { code?: string }).code === 'EEXIST') return 'held-by-another'
+      // A directory we cannot write, or a full disk. Same reasoning as above.
+      return 'unrecorded'
+    }
+  }
+
+  /** Record that the gateway took this one, so the marker stops claiming otherwise. */
+  private confirm(key: string): void {
+    try {
+      const path = this.markerPath(key)
+      const held = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+      if (held['owner'] !== this.owner) return
+      writeFileSync(path, `${JSON.stringify({
+        ...held, delivered: true, delivered_at: new Date().toISOString(),
+      }, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    } catch {
+      // The marker is gone or unreadable. The message landed either way, and a
+      // marker that cannot be updated is not worth failing a delivered page for.
     }
   }
 
   /** Release a claim whose message did not land, so the next occurrence reports. */
   private release(key: string): void {
     try {
-      unlinkSync(this.markerPath(key))
+      const path = this.markerPath(key)
+      // Only ever this process's own claim. Two writers share one escalation
+      // directory — the long-lived mind and a headless run — and an unlink by
+      // digest alone deletes whichever claim is there, including one somebody
+      // else has already delivered against, which double-pages the next
+      // occurrence.
+      const held = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+      if (held['owner'] !== this.owner || held['delivered'] === true) return
+      unlinkSync(path)
+      this.reported.delete(key)
     } catch {
       // Nothing to release, or a directory we cannot write. Either way the
       // refusal stays claimed, which is the same state a successful send leaves.
@@ -348,19 +471,27 @@ export function commsSender(
  * @param cwd - the working directory to report the refusals against.
  * @returns the escalator, or nothing when this mind escalates to nobody.
  */
-export function escalatorFromEnv(cwd: string): Escalator | undefined {
-  const recipient = process.env.DSH_ESCALATE_TO_MIND_ID
-  if (recipient === undefined || recipient.trim().length === 0) return undefined
-  const commsUrl = process.env.COMMS_URL
-  if (commsUrl === undefined || commsUrl.trim().length === 0) return undefined
-  const senderMindId = process.env.MIND_ID
-  if (senderMindId === undefined || senderMindId.trim().length === 0) return undefined
+export function escalatorFromEnv(
+  conversationId: string, cwd: string, warn: (line: string) => void = () => {},
+): Escalator | undefined {
+  const recipient = (process.env.DSH_ESCALATE_TO_MIND_ID ?? '').trim()
+  if (recipient.length === 0) return undefined
+  const commsUrl = (process.env.COMMS_URL ?? '').trim()
+  const senderMindId = (process.env.MIND_ID ?? '').trim()
+  // Asked to escalate and unable to: said out loud, because the alternative is
+  // a mind configured to report its refusals that silently reports none, and
+  // the absence of a page is indistinguishable from a run that had no gaps.
+  if (commsUrl.length === 0 || senderMindId.length === 0) {
+    warn('dsh-hive: DSH_ESCALATE_TO_MIND_ID is set but COMMS_URL or MIND_ID is not; no refusal will be reported\n')
+    return undefined
+  }
   return new Escalator({
-    recipientMindId: recipient.trim(),
-    senderMindId: senderMindId.trim(),
+    recipientMindId: recipient,
+    senderMindId,
     senderName: process.env.MIND_NAME ?? 'a mind',
     markerDir: process.env.DSH_ESCALATION_DIR ?? defaultMarkerDir(),
+    conversationId,
     cwd,
-    send: commsSender(commsUrl.trim(), process.env.COMMS_BEARER_TOKEN),
+    send: commsSender(commsUrl, process.env.COMMS_BEARER_TOKEN),
   })
 }

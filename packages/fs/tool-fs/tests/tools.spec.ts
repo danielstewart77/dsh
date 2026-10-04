@@ -990,4 +990,16 @@ describe('sandbox escalation API (write/edit)', () => {
     expect(result.isError).toBe(true)
     expect(text(result)).toContain('not available in this composition')
   })
+
+  it('codes that refusal, so the log names a capability this composition lacks', async () => {
+    // The durable `tool/result` keeps a code only off a HarnessError. Without
+    // one this reads on the log exactly like a tool that ran and failed, and
+    // the remedy — compose a sandboxing filesystem — is nothing like the one
+    // offered for a tool's own failure.
+    const { ctx } = await setup()
+
+    const result = await call(ctx, 'write', { file_path: 'a.txt', content: 'x', sandbox_permissions: 'workspace-write', justification: 'why' }, escalationAgent())
+
+    expect(result.error?.info).toEqual({ name: 'HarnessError', code: 'UNSUPPORTED_CAPABILITY' })
+  })
 })

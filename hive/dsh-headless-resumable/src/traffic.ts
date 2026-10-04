@@ -171,13 +171,29 @@ function failureMessage(error: object): string {
  * failure and nothing an outside mind can fix.
  */
 export const HARNESS_REFUSAL_CODES: readonly string[] = [
+  // The model named an argument the harness does not accept, before dispatch.
   'INVALID_ARGS',
   'UNKNOWN_TOOL',
   // A `tools/pre-execute` gate or a guard declined the call before the body ran.
   'DENIED_BY_POLICY',
   // A `tools/post-execute` policy rejected the result of a body that did run.
   'BLOCKED_AFTER_EXECUTE',
+  // A sandboxing filesystem fenced the mutation.
+  'FS_SANDBOX_DENIED',
+  // The model asked for something this composition does not have.
+  'UNSUPPORTED_CAPABILITY',
 ]
+
+/**
+ * Codes that are a failure but nobody's harness bug.
+ *
+ * `DENIED_BY_APPROVAL` is a person declining, or a composition with no channel
+ * to ask through — the system working. `TOOL_REJECTED_ARGS` is a tool that
+ * accepted the call and then rejected its own arguments, which is the model
+ * being bad at its job. Listed for the reader rather than consulted: neither is
+ * in {@link HARNESS_REFUSAL_CODES}, which is what decides.
+ */
+export const NOT_A_HARNESS_GAP: readonly string[] = ['DENIED_BY_APPROVAL', 'TOOL_REJECTED_ARGS']
 
 /** Where a failure came from: the harness turning a call away, or a tool that ran and failed. */
 export type FailureOrigin = 'harness' | 'tool'

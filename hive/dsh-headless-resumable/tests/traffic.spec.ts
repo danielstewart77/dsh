@@ -231,6 +231,25 @@ describe('a call a policy declined', () => {
 
     expect(firstFailedCall(events, 0)?.origin).toBe('harness')
   })
+
+  it('does not call that an unserved call, because the body ran and may have written', () => {
+    const events = [
+      call('a', 'write', '{"file_path":"/app/db.py","content":"x"}'),
+      result('a', { name: 'ToolRefused', code: 'BLOCKED_AFTER_EXECUTE', message: 'blocked by post-execute policy' }),
+    ]
+
+    // The remedy for a blocked result is to widen the policy; the remedy
+    // offered for an unserved call is to add a tool the harness already has.
+    expect(toolTraffic(events, 0).unservedCalls).toEqual([])
+  })
+
+  it('blames the tool when a person declined, or when the tool rejected its own arguments', () => {
+    const asked = [call('a', 'write', '{"file_path":"/x"}'), result('a', { name: 'ToolRefused', code: 'DENIED_BY_APPROVAL', message: 'the user rejected tool "write"' })]
+    const fussy = [call('b', 'edit', '{"file_path":"/x","old_string":"y"}'), result('b', { name: 'ToolArgsError', code: 'TOOL_REJECTED_ARGS', message: 'old_string and new_string are identical' })]
+
+    expect(firstFailedCall(asked, 0)?.origin).toBe('tool')
+    expect(firstFailedCall(fussy, 0)?.origin).toBe('tool')
+  })
 })
 
 describe('the first failed call', () => {
