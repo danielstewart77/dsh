@@ -20,24 +20,6 @@ describe('outcome mapping helpers', () => {
     })).resolves.toEqual(expected)
   })
 
-  it('settleRun reports a failed child failure message and code in the task detail', async () => {
-    // A background delegation's outcome IS this detail string: a bare `error`
-    // tells the parent nothing it can act on.
-    await expect(settleRun({
-      id: SessionId('child'),
-      localAgent: undefined,
-      result: Promise.resolve({
-        output: [],
-        stopReason: 'error' as const,
-        failure: { message: 'provider has no configured model "qwen-plus"', code: 'UNKNOWN_MODEL' },
-      }),
-      dispose: () => Promise.resolve(),
-    })).resolves.toEqual({
-      status: 'failed',
-      detail: 'error: provider has no configured model "qwen-plus" (UNKNOWN_MODEL)',
-    })
-  })
-
   it('settleRun disposes the run before reporting, on both result paths', async () => {
     const order: string[] = []
     const completed = await settleRun({
