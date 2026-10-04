@@ -97,7 +97,7 @@ export type {
   SubagentDescriptorInput,
 } from './descriptor.ts'
 export { seedDescriptorTurn } from './descriptor-seed.ts'
-export { SubagentError } from './error.ts'
+export { SubagentError, thrownFailure, turnEndFailure } from './error.ts'
 export { settleRun } from './run-settlement.ts'
 export { assertSubagentMaxDepth, delegationDepthOf } from './depth.ts'
 export {

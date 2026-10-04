@@ -119,6 +119,19 @@ async function settleStart(start: Promise<SubagentRun>, signal: AbortSignal): Pr
   }
 }
 
+/**
+ * The child's own failure appended to a stop-reason headline, so the model
+ * reading the tool result sees why the run ended rather than only that it did.
+ * A rejected model name and a crashed child are the same stop reason and need
+ * different remedies, and the provider's message is what distinguishes them.
+ * @param headline - the stop-reason wording.
+ * @param failure - the child's failure, when the run recovered one.
+ * @returns the headline, extended with the failure's message and code.
+ */
+function withFailureDetail(headline: string, failure: SubagentResult['failure']): string {
+  return failure === undefined ? headline : `${headline}: ${failure.message} (${failure.code})`
+}
+
 /** A non-`completed` stop reason means the child did not finish cleanly. */
 function stopReasonError(result: SubagentResult): string | undefined {
   switch (result.stopReason) {
@@ -127,7 +140,7 @@ function stopReasonError(result: SubagentResult): string | undefined {
     case 'aborted':
       return 'subagent run was cancelled'
     case 'error':
-      return 'subagent run failed'
+      return withFailureDetail('subagent run failed', result.failure)
     case 'max-tokens':
       return 'subagent run hit its token limit before finishing'
     case 'refusal':

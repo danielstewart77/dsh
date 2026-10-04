@@ -1,4 +1,4 @@
-import { CallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { CallId, createUserMessage, LlmError } from '@deepseek-ai/dsh-llm'
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import { type Agent, type AgentOptions } from '@deepseek-ai/dsh-agent'
@@ -309,6 +309,25 @@ describe('startInProcessRun', () => {
     const child = ctx.agents.get(run.id)!
     expect(child.options).toEqual({ subagentDepth: 1 })
     await expect(run.result).resolves.toMatchObject({ stopReason: 'error' })
+    await run.dispose()
+  })
+
+  it('carries the child adapter failure message and code onto the run result', async () => {
+    // The live shape of a rejected model: the adapter throws an `LlmError`,
+    // the child's turn ends on it, and the delegating parent is handed only
+    // this result. Without `turnEndFailure` reading the turn's own reason the
+    // provider's sentence is dropped here and never reaches the caller.
+    const { parent } = await setup([() => {
+      throw new LlmError('pi-ai provider "cypher" has no configured model "qwen-plus"', 'UNKNOWN_MODEL')
+    }])
+    const run = await startInProcessRun(request(parent), {})
+    await expect(run.result).resolves.toMatchObject({
+      stopReason: 'error',
+      failure: {
+        message: 'pi-ai provider "cypher" has no configured model "qwen-plus"',
+        code: 'UNKNOWN_MODEL',
+      },
+    })
     await run.dispose()
   })
 

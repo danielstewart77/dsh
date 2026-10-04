@@ -363,10 +363,10 @@ describe('task admission and package contracts', () => {
     const run = await ctx.subagents.start('claude-code', request())
     child.settle({ exitCode: 9, signal: null })
     child.stdout.end()
-    await expect(run.result).resolves.toEqual({
-      output: [],
-      stopReason: 'error',
-    })
+    const settled = await run.result
+    expect(settled.output).toEqual([])
+    expect(settled.stopReason).toBe('error')
+    expect(settled.failure?.message).toContain('ended without a result')
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(
       'subagent-claude-code: child run failed (error):',
     ))
@@ -655,10 +655,10 @@ describe('run publication, cancellation, and settlement', () => {
         request(),
         { ...fixture.spec, onError },
       )
-      await expect(run.result).resolves.toEqual({
-        output: [],
-        stopReason: 'error',
-      })
+      const settled = await run.result
+      expect(settled.output).toEqual([])
+      expect(settled.stopReason).toBe('error')
+      expect(settled.failure?.message).toContain('Claude Code failed:')
       expect(onError).toHaveBeenCalledWith(
         expect.any(Error),
         'error',
@@ -673,10 +673,10 @@ describe('run publication, cancellation, and settlement', () => {
       new Error('iterator boom'),
     )
     const run = await startClaudeCodeRun(request(), fixture.spec)
-    await expect(run.result).resolves.toEqual({
-      output: [],
-      stopReason: 'error',
-    })
+    const settled = await run.result
+    expect(settled.output).toEqual([])
+    expect(settled.stopReason).toBe('error')
+    expect(settled.failure?.message).toContain('iterator boom')
     await run.dispose()
   })
 

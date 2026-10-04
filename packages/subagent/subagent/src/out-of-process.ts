@@ -14,6 +14,7 @@
 import { accessSync, constants, statSync } from 'node:fs'
 import { isAbsolute, resolve } from 'node:path'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { thrownFailure } from './error.ts'
 import type { SubagentCapabilities, SubagentResult, SubagentRun, SubagentStopReason } from './types.ts'
 
 /**
@@ -169,7 +170,10 @@ export async function settleRunResult(parts: RunResultSettlement): Promise<Subag
     } catch {
       // The diagnostic sink cannot reject the run result.
     }
-    return { output: parts.collectOutput(), stopReason: 'error' }
+    // The transport's own message is the only account of why this run ended;
+    // a bare stop reason would leave the caller unable to tell a rejected
+    // request from a child that crashed.
+    return { output: parts.collectOutput(), stopReason: 'error', failure: thrownFailure(toError(error)) }
   } finally {
     parts.signal.removeEventListener('abort', parts.onAbort)
   }
