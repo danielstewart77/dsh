@@ -255,6 +255,35 @@ describe('tool-str-replace-editor', () => {
     expect(await readFile(sample, 'utf8')).toBe('')
   })
 
+  // Measured on a real run: one model sent `write` with an `old_str` and a
+  // `new_str`, which is a str_replace by any reading, and the command enum
+  // refused it at call twenty four.
+  it('replaces text when the call names a command this tool does not have', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'unknown-verb.txt')
+    await writeFile(sample, 'before OLD after')
+
+    const edited = await call(ctx, owner, {
+      command: 'write',
+      file_path: sample,
+      old_str: 'OLD',
+      new_str: 'NEW',
+    })
+
+    expect(edited.isError).toBe(false)
+    expect(await readFile(sample, 'utf8')).toBe('before NEW after')
+  })
+
+  it('creates a file when an unrecognized command carries file_text', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'unknown-create.txt')
+
+    const created = await call(ctx, owner, { command: 'write', file_path: sample, file_text: 'fresh' })
+
+    expect(created.isError).toBe(false)
+    expect(await readFile(sample, 'utf8')).toBe('fresh')
+  })
+
   it('replaces text when the call names no command at all', async () => {
     const { ctx, root, owner } = await setup()
     const sample = join(root, 'inferred.txt')

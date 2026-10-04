@@ -385,7 +385,8 @@ interface ResolvedConfig {
  * call is the only thing the model can use.
  */
 interface EditorArgs {
-  command?: 'view' | 'create' | 'str_replace' | 'insert'
+  /** Any string: the schema declares no enum, and an unrecognized verb is inferred past. */
+  command?: string
   path?: string
   file_path?: string
   file_text?: string
@@ -410,13 +411,32 @@ function editorPath(args: EditorArgs): string {
   return value
 }
 
+/** The commands this tool runs. A call naming anything else is read from its arguments. */
+const EDITOR_COMMANDS = ['view', 'create', 'str_replace', 'insert'] as const
+
+/** Whether a string names a command this tool actually runs. */
+function isEditorCommand(named: string): named is EditorCommand {
+  return (EDITOR_COMMANDS as readonly string[]).includes(named)
+}
+
+/** One of the commands this tool runs. */
+export type EditorCommand = typeof EDITOR_COMMANDS[number]
+
 /**
- * The command the call asked for, inferred when it named none.
+ * The command the call asked for, inferred when it named none or named one this
+ * tool does not have.
+ *
+ * A model names the verb its training put in it. Measured on a real run, one
+ * sent `write` with an `old_str` and a `new_str` — a str_replace by any
+ * reading — and was refused. So the verb is a hint and the arguments are the
+ * request: an unrecognized one is inferred from exactly as an absent one is,
+ * which is an overload rather than a translation layer.
  * @param args - the raw tool arguments.
  * @returns the command to run.
  */
-function editorCommand(args: EditorArgs): 'view' | 'create' | 'str_replace' | 'insert' {
-  if (args.command !== undefined) return args.command
+function editorCommand(args: EditorArgs): EditorCommand {
+  const named = args.command
+  if (named !== undefined && isEditorCommand(named)) return named
   if (args.old_str !== undefined) return 'str_replace'
   if (args.insert_line !== undefined) return 'insert'
   if (args.file_text !== undefined) return 'create'
@@ -475,8 +495,12 @@ function registerStrReplaceEditor(ctx: Context, config: ResolvedConfig): void {
     parameters: {
       command: {
         type: 'string',
-        enum: ['view', 'create', 'str_replace', 'insert'],
-        description: 'The commands to run. Allowed options are: `view`, `create`, `str_replace`, `insert`. Inferred from the other arguments when omitted.',
+        // No enum. A model names the verb its training put in it — measured on a
+        // real run, one sent `write` with an `old_str` and a `new_str`, which is
+        // a str_replace by any reading, and the enum refused it. The command is
+        // a hint; the arguments are the request, so an unrecognized verb falls
+        // through to the same inference an omitted one does.
+        description: 'The command to run: `view`, `create`, `str_replace` or `insert`. Inferred from the other arguments when omitted or unrecognized.',
       },
       path: {
         type: 'string',

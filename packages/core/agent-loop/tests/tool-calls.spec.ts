@@ -483,8 +483,8 @@ describe('tool-call scheduler: abort handling', () => {
       isError: e.data.message.content[0].isError,
       error: e.data.error,
     }))).toEqual([
-      { callId: CallId('c1'), isError: true, error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH } },
-      { callId: CallId('c2'), isError: true, error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH } },
+      { callId: CallId('c1'), isError: true, error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH, message: 'tool call aborted before dispatch' } },
+      { callId: CallId('c2'), isError: true, error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH, message: 'tool call aborted before dispatch' } },
     ])
   })
 
@@ -515,8 +515,8 @@ describe('tool-call scheduler: abort handling', () => {
       isError: e.data.message.content[0].isError,
       error: e.data.error,
     }))).toEqual([
-      { callId: CallId('c1'), isError: true, error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH } },
-      { callId: CallId('c2'), isError: true, error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH } },
+      { callId: CallId('c1'), isError: true, error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH, message: 'tool call aborted before dispatch' } },
+      { callId: CallId('c2'), isError: true, error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH, message: 'tool call aborted before dispatch' } },
     ])
   })
 
@@ -557,12 +557,12 @@ describe('tool-call scheduler: abort handling', () => {
         {
           callId: CallId('c3'),
           isError: true,
-          error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH },
+          error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH, message: 'tool call aborted before dispatch' },
         },
         {
           callId: CallId('c4'),
           isError: true,
-          error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH },
+          error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH, message: 'tool call aborted before dispatch' },
         },
       ])
     const settled = events(agent).filter(e => e.type === 'tool/result'
@@ -625,7 +625,7 @@ describe('tool-call scheduler: abort handling', () => {
           source: { kind: 'tool', callId: CallId('c3') },
           content: [{ isError: true }],
         },
-        error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH },
+        error: { name: 'AbortError', code: TOOL_ABORTED_BEFORE_DISPATCH, message: 'tool call aborted before dispatch' },
       })
   })
 })

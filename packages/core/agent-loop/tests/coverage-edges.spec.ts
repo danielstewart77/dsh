@@ -236,8 +236,32 @@ describe('structured tool error propagation (the runtime-validation Agent Note, 
 
     const toolResult = agent.session.events.find(e => e.type === 'tool/result')
     expect(toolResult?.type === 'tool/result' && toolResult.data.message.content[0].isError).toBe(true)
+    // The message rides with the class and code: a reader of the log sees what
+    // the failure actually said rather than having to re-derive it from BOOM.
     expect(toolResult?.type === 'tool/result' && toolResult.data.error)
-      .toEqual({ name: 'HarnessError', code: 'BOOM' })
+      .toEqual({ name: 'HarnessError', code: 'BOOM', message: 'exploded' })
+  })
+
+  it('trims a failure message long enough to be the file the tool failed on', async () => {
+    const { HarnessError } = await import('@deepseek-ai/dsh-llm')
+    const adapter = new MockAdapter([toolCallResponse('c1', 'verbose', {}), textResponse('done')])
+    const ctx = await harness(adapter)
+    const agent = ctx.agentLoop.create(SessionId('a2'), { provider: 'mock', model: 'mock' })
+    ctx.tools.register(defineContentToolFixture({
+      name: 'verbose',
+      description: 'fails at length',
+      parameters: {},
+      async execute() {
+        throw new HarnessError('x'.repeat(9000), 'VERBOSE')
+      },
+    }))
+
+    send(agent, 'go')
+    await waitForIdle(ctx, agent)
+
+    const toolResult = agent.session.events.find(e => e.type === 'tool/result')
+    const recorded = toolResult?.type === 'tool/result' ? toolResult.data.error?.message : undefined
+    expect(recorded?.length).toBe(2000)
   })
 })
 
