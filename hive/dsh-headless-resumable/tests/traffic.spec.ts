@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-import { firstFailedCall, toolTraffic } from '../src/traffic.ts'
+import { firstFailedCall, toolTraffic, UNCODED_REFUSAL } from '../src/traffic.ts'
 
 let seq = 0
 function event<T extends SessionEvent['type']>(type: T, data: unknown): SessionEvent {
@@ -22,6 +22,20 @@ function result(callId: string, error?: { name: string; code: string; message?: 
     step: 1,
     message: { role: 'tool', content: [], source: { callId } },
     ...error === undefined ? {} : { error },
+  })
+}
+
+// A call the runtime refused before any tool ran: no structured error at all,
+// only isError on the content the model reads.
+function refusedResult(callId: string, said: string): SessionEvent {
+  return event('tool/result', {
+    turn: 1,
+    step: 1,
+    message: {
+      role: 'tool',
+      content: [{ type: 'text', text: said, isError: true }],
+      source: { callId },
+    },
   })
 }
 
@@ -140,6 +154,51 @@ describe('tool traffic', () => {
 
     expect(traffic).toMatchObject({ emitted: 0, answered: 0, unanswered: 0 })
     expect(traffic.failuresByCode).toEqual({})
+  })
+})
+
+describe('a refusal carrying no code of its own', () => {
+  // Measured on a real run: three `write` calls were refused with "invalid
+  // escalation: justification is only valid together with sandbox_permissions"
+  // and the run reported 54 of 54 served.
+  it('counts as a failure rather than a success in the tally', () => {
+    const events = [
+      call('a', 'write', '{"file_path":"/app/db.py","content":"x"}'),
+      refusedResult('a', 'Error: invalid escalation: justification is only valid together with sandbox_permissions'),
+      call('b', 'read', '{"file_path":"/app/db.py"}'),
+      result('b'),
+    ]
+
+    const traffic = toolTraffic(events, 0)
+
+    expect(traffic.emitted).toBe(2)
+    expect(traffic.succeeded).toBe(1)
+    expect(traffic.failed).toBe(1)
+    expect(traffic.failuresByCode).toEqual({ [UNCODED_REFUSAL]: 1 })
+  })
+
+  it('is reported as a call the harness never served', () => {
+    const events = [
+      call('a', 'write', '{"file_path":"/app/db.py","content":"x"}'),
+      refusedResult('a', 'Error: invalid escalation'),
+    ]
+
+    expect(toolTraffic(events, 0).unservedCalls).toEqual([
+      { name: 'write', parameters: ['file_path', 'content'], count: 1 },
+    ])
+  })
+
+  it('stops the run, naming the harness and quoting what it said', () => {
+    const events = [
+      call('a', 'write', '{"file_path":"/app/db.py"}'),
+      refusedResult('a', 'Error: invalid escalation: justification is only valid together with sandbox_permissions'),
+    ]
+
+    const failure = firstFailedCall(events, 0)
+
+    expect(failure?.origin).toBe('harness')
+    expect(failure?.code).toBe(UNCODED_REFUSAL)
+    expect(failure?.message).toContain('invalid escalation')
   })
 })
 
