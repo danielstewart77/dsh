@@ -11,6 +11,7 @@ import type { SessionId } from '@deepseek-ai/dsh-session'
 
 export {
   ESCALATION_TARGETS,
+  UNSUPPORTED_CAPABILITY_CODE,
   WIDER_MODES,
   approveEscalation,
   escalationHintMarker,

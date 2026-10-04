@@ -427,7 +427,10 @@ describe('ToolRuntime', () => {
     const result = await ctx.tools.execute({ signal: testToolSignal, callId: CallId('block'), name: 'echo', arguments: { text: 'secret' } })
     expect(result).toEqual({
       isError: true,
-      error: { message: 'blocked by policy' },
+      error: {
+        message: 'blocked by policy',
+        info: { name: 'ToolRefused', code: 'BLOCKED_AFTER_EXECUTE' },
+      },
       content: [{ type: 'text', text: 'blocked by policy' }],
     })
     expect('value' in result).toBe(false)
@@ -692,6 +695,30 @@ describe('ToolRuntime', () => {
     expect(result.isError).toBe(true)
     expect(result.content[0]).toMatchObject({ text: 'Error: denied by policy' })
     expect(postSawFrozen).toBe(true)
+  })
+
+  it('codes a pre-execute denial so the durable log names the side that refused', async () => {
+    // The agent loop persists an error field only when the failure carried a
+    // class and code, so a refusal recorded without one is indistinguishable on
+    // the log from a tool body throwing a plain Error — and the two have
+    // opposite remedies.
+    const ctx = await setup()
+    ctx.tools.register(echoTool)
+    ctx.on('tools/pre-execute', async (): Promise<PreToolDecision> => ({ kind: 'deny', reason: 'denied by policy' }))
+
+    const result = await ctx.tools.execute({ signal: testToolSignal, callId: CallId('c1'), name: 'echo', arguments: { text: 'hi' } })
+
+    expect(result.error?.info).toEqual({ name: 'ToolRefused', code: 'DENIED_BY_POLICY' })
+  })
+
+  it('codes a post-execute block distinctly, because that body already ran', async () => {
+    const ctx = await setup()
+    ctx.tools.register(echoTool)
+    ctx.on('tools/post-execute', async () => ({ kind: 'block', feedback: [{ type: 'text', text: 'output rejected' }] }))
+
+    const result = await ctx.tools.execute({ signal: testToolSignal, callId: CallId('c1'), name: 'echo', arguments: { text: 'hi' } })
+
+    expect(result.error?.info).toEqual({ name: 'ToolRefused', code: 'BLOCKED_AFTER_EXECUTE' })
   })
 
   it('an ask decision degrades to deny when no approval seam is mounted', async () => {
@@ -1150,7 +1177,10 @@ describe('ToolRuntime', () => {
     await expect(pending).resolves.toEqual({
       content: [{ type: 'text', text: 'Error: policy denied the call' }],
       isError: true,
-      error: { message: 'policy denied the call' },
+      error: {
+        message: 'policy denied the call',
+        info: { name: 'ToolRefused', code: 'DENIED_BY_POLICY' },
+      },
     })
     expect(dispatched).toBe(0)
   })
