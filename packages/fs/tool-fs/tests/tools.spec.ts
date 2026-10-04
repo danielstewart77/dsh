@@ -961,11 +961,27 @@ describe('sandbox escalation API (write/edit)', () => {
     expect(text(result)).toContain('no agent to route it through')
   })
 
-  it('rejects the escalation argument pairing (one field without the other)', async () => {
+  it('rejects an escalation that gives no reason for itself', async () => {
     const { ctx } = await setupConfining()
     const missing = await call(ctx, 'write', { file_path: 'a.txt', content: 'x', sandbox_permissions: 'workspace-write' }, escalationAgent())
     expect(missing.isError).toBe(true)
     expect(text(missing)).toContain('sandbox_permissions requires a justification')
+  })
+
+  // Measured on a real run: three writes carried a one-line reason and asked for
+  // no extra permission, all three were refused, and the modules they would have
+  // written were missing for the rest of the run.
+  it('serves a write carrying a reason but asking for no escalation', async () => {
+    const { ctx, fs } = await setup()
+
+    const result = await call(ctx, 'write', {
+      file_path: 'narrated.txt',
+      content: 'x',
+      justification: 'Create core database schema for hive-health measurements',
+    }, { session: { header: {} } })
+
+    expect(result.isError).toBe(false)
+    expect(fs.files.get('key:narrated.txt')).toBe('x')
   })
 
   it('sandbox_permissions under a non-confining backend fails closed (unadvertised field still reaches execute)', async () => {

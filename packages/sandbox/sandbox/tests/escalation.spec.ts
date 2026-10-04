@@ -35,10 +35,16 @@ describe('validateEscalationArgs', () => {
     expect(() => { validateEscalationArgs('workspace-write', 'because the workspace needs it') }).not.toThrow()
   })
 
-  it('rejects one field without the other, and a blank justification', () => {
+  // Measured on a real run: three `write` calls carried a one-line reason and no
+  // escalation, and refusing them cost the run two modules it then built against.
+  it('accepts a justification offered without any escalation, since it asks for nothing', () => {
+    expect(() => { validateEscalationArgs(undefined, 'Create core database schema') }).not.toThrow()
+  })
+
+  it('still rejects an escalation with no reason, and a blank justification', () => {
     expect(() => { validateEscalationArgs('workspace-write', undefined) }).toThrow(/requires a justification/)
-    expect(() => { validateEscalationArgs(undefined, 'orphan reason') }).toThrow(/only valid together with sandbox_permissions/)
     expect(() => { validateEscalationArgs('workspace-write', '   ') }).toThrow(/non-empty sentence/)
+    expect(() => { validateEscalationArgs(undefined, '   ') }).toThrow(/non-empty sentence/)
   })
 })
 

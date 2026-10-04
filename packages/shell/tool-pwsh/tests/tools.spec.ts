@@ -565,7 +565,6 @@ describe('sandbox escalation through ctx.approval', () => {
 
     for (const args of [
       { command: 'Write-Output ok', description: 'd', sandbox_permissions: 'workspace-write' },
-      { command: 'Write-Output ok', description: 'd', justification: 'why' },
       { command: 'Write-Output ok', description: 'd', sandbox_permissions: 'workspace-write', justification: ' ' },
     ]) {
       expect((await call(ctx, 'pwsh', args)).isError).toBe(true)
