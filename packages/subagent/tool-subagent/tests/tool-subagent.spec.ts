@@ -96,12 +96,12 @@ describe('dsh-tool-subagent', () => {
     expect(text(result)).toBe('child says hi')
   })
 
-  it('exposes description + prompt + run_in_background to the model (no provider/type parameter)', async () => {
+  it('exposes description + prompt + model + run_in_background to the model (no provider/type parameter)', async () => {
     const ctx = await setup({ provider: 'mock' })
     const schema = ctx.tools.schemas().find(s => s.name === 'subagent')
     expect(schema).toBeDefined()
     const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
-    expect(Object.keys(props).sort()).toEqual(['description', 'prompt', 'run_in_background'])
+    expect(Object.keys(props).sort()).toEqual(['description', 'model', 'prompt', 'run_in_background'])
     expect(schema!.description).toContain('job_output')
   })
 
@@ -109,7 +109,7 @@ describe('dsh-tool-subagent', () => {
     const ctx = await setup({ provider: 'mock', enableRunInBackground: false })
     const schema = ctx.tools.schemas().find(s => s.name === 'subagent')
     const props = (schema!.parameters as { properties?: Record<string, unknown> }).properties ?? {}
-    expect(Object.keys(props).sort()).toEqual(['description', 'prompt'])
+    expect(Object.keys(props).sort()).toEqual(['description', 'model', 'prompt'])
     expect(schema!.description).not.toContain('job_output')
   })
 
@@ -1008,6 +1008,21 @@ describe('dsh-tool-subagent continuable background mode', () => {
     return { ctx, parent }
   }
 
+  it('carries the named model onto a continuable delegation', async () => {
+    // The continuable route hands its own request to startContinuable and
+    // persists the model onto the child's descriptor, so a request built
+    // separately there would strand the child on the default for its whole life.
+    const { ctx, parent } = await continuableSetup()
+    const startContinuable = vi.spyOn(ctx.subagents, 'startContinuable')
+    await callSubagent(
+      ctx,
+      { description: 'continuable work', prompt: 'dig in', model: 'named-child-model' },
+      { agent: parent },
+    )
+    expect(startContinuable).toHaveBeenCalledTimes(1)
+    expect(startContinuable.mock.calls[0]?.[0]?.request.agentOptions?.model).toBe('named-child-model')
+  })
+
   it('classifies continuable background calls concurrency-safe', async () => {
     const { ctx } = await continuableSetup()
     expect(ctx.tools.executionMode({
@@ -1273,5 +1288,138 @@ describe('depth budget configuration', () => {
     await callSubagent(ctx, { description: 'd', prompt: 'p' })
     expect(requests[0]?.maxDepth).toBeUndefined()
     expect(requests[0]?.toolFilter).toBeUndefined()
+  })
+})
+
+describe('per-call child model', () => {
+  /**
+   * Mount the real tool on a provider that records every start request, so a
+   * test can assert on the `agentOptions` the plugin body actually sent.
+   */
+  async function captureStarts(name: string, toolConfig: Omit<tool.Config, 'provider'>) {
+    const requests: SubagentStartRequest[] = []
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(SubagentRuntime)
+    ctx.subagents.registerProvider({
+      name,
+      capabilities: { outputSchema: false, depthLimit: false, toolFilter: false, persona: false },
+      inheritsParentContext: false,
+      start: async (request) => {
+        requests.push(request)
+        return {
+          id: SessionId(`${name}-child`),
+          localAgent: undefined,
+          result: Promise.resolve({ output: [{ type: 'text', text: 'ok' }], stopReason: 'completed' as const }),
+          dispose: async () => {},
+        }
+      },
+    })
+    await ctx.plugin(tool, { provider: name, maxDepth: 'provider-managed', ...toolConfig })
+    return { ctx, requests }
+  }
+
+  it('runs the child on the model named by the caller, over the configured default', async () => {
+    // The configured default differs, so a merge in the wrong order — config
+    // last — is caught here rather than incidentally somewhere else.
+    const { ctx, requests } = await captureStarts('model-named', { agentOptions: { model: 'configured-model' } })
+    await callSubagent(ctx, { description: 'd', prompt: 'p', model: 'qwen3-coder' })
+    expect(requests[0]?.agentOptions?.model).toBe('qwen3-coder')
+  })
+
+  it('keeps the rest of the configured child options when the caller names a model', async () => {
+    // A named model must not re-route the child or lift its token ceiling.
+    const { ctx, requests } = await captureStarts('model-merge', {
+      agentOptions: { provider: 'house-proxy', model: 'configured-model', maxTokens: 4096 },
+    })
+    await callSubagent(ctx, { description: 'd', prompt: 'p', model: 'glm-5' })
+    expect(requests[0]?.agentOptions).toEqual({ provider: 'house-proxy', model: 'glm-5', maxTokens: 4096 })
+  })
+
+  it('confines a named model to the call that named it', async () => {
+    const { ctx, requests } = await captureStarts('model-scope', { agentOptions: { model: 'configured-model' } })
+    await callSubagent(ctx, { description: 'd', prompt: 'p', model: 'one-off-model' })
+    await callSubagent(ctx, { description: 'd', prompt: 'p' })
+    expect(requests.map(r => r.agentOptions?.model)).toEqual(['one-off-model', 'configured-model'])
+  })
+
+  it('keeps two overlapping delegations on their own models', async () => {
+    // The tool declares itself concurrency-safe and its prompt tells the model
+    // to start independent delegations in one message. A merge written in place
+    // over the shared config would hand one sibling's model to the other, and
+    // to every delegation after it.
+    const { ctx, requests } = await captureStarts('model-parallel', { agentOptions: { model: 'configured-model' } })
+    await Promise.all([
+      callSubagent(ctx, { description: 'a', prompt: 'p', model: 'model-a' }),
+      callSubagent(ctx, { description: 'b', prompt: 'p', model: 'model-b' }),
+    ])
+    await callSubagent(ctx, { description: 'c', prompt: 'p' })
+    expect(requests.map(r => r.agentOptions?.model).sort()).toEqual(['configured-model', 'model-a', 'model-b'])
+  })
+
+  it('leaves the model key absent when no model is named and the configured defaults name none', async () => {
+    // An own `model` key holding undefined is spread over the parent's model in
+    // resolveChildAgentOptions and erases it, dropping the child onto the
+    // deployment default instead of the delegating conversation's model.
+    const { ctx, requests } = await captureStarts('model-absent', { agentOptions: { maxTokens: 512 } })
+    await callSubagent(ctx, { description: 'd', prompt: 'p' })
+    expect(requests[0]?.agentOptions).toBeDefined()
+    expect(requests[0]?.agentOptions).not.toHaveProperty('model')
+  })
+
+  it('refuses an empty model instead of starting a child on nothing', async () => {
+    const { ctx, requests } = await captureStarts('model-empty', { agentOptions: { model: 'configured-model' } })
+    const result = await callSubagent(ctx, { description: 'd', prompt: 'p', model: '' })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('model')
+    expect(requests).toHaveLength(0)
+  })
+
+  it('refuses a model that is only whitespace', async () => {
+    // Separate case: an implementation testing `=== \'\'` passes the empty half
+    // and starts a child on a model name made of spaces.
+    const { ctx, requests } = await captureStarts('model-blank', { agentOptions: { model: 'configured-model' } })
+    const result = await callSubagent(ctx, { description: 'd', prompt: 'p', model: '   ' })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('model')
+    expect(requests).toHaveLength(0)
+  })
+
+  it('refuses a model that is not a string', async () => {
+    // The argument validator carries undeclared and mistyped keys through, so
+    // the type has to be enforced here or a number reaches agents.create.
+    const { ctx, requests } = await captureStarts('model-mistyped', {})
+    const result = await callSubagent(ctx, { description: 'd', prompt: 'p', model: 7 })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('model')
+    expect(requests).toHaveLength(0)
+  })
+
+  it('carries the named model onto a one-shot background delegation', async () => {
+    // The background route reuses the same request literal today; this holds
+    // that true, since a second literal there would silently lose the model.
+    let seen: SubagentStartRequest | undefined
+    const ctx = await setup(
+      { provider: 'mock', agentOptions: { model: 'configured-model' } },
+      { onStart: (request) => { seen = request } },
+    )
+    await ctx.plugin(AgentRegistry)
+    await ctx.plugin(LocalJobRegistry)
+    await ctx.plugin(ToolTasks, {})
+    const scopeFiber = ctx.plugin(() => {})
+    const id = SessionId('bg-model-parent')
+    const parent = {
+      id,
+      ctx: scopeFiber.ctx,
+      inject: () => {},
+      options: {},
+      session: { id, header: { version: 0, id, createdAt: 0 } },
+    } as unknown as Agent
+    ctx.agents.register(parent)
+
+    await callSubagent(ctx, { description: 'd', prompt: 'p', model: 'background-model', run_in_background: true }, { agent: parent })
+    await vi.waitFor(() => { expect(seen).toBeDefined() })
+    expect(seen?.agentOptions?.model).toBe('background-model')
   })
 })

@@ -235,6 +235,55 @@ function providerWording(inheritsConversation: boolean): { description: string; 
   }
 }
 
+/**
+ * Resolve the child's agent options for one call: the configured defaults,
+ * with a caller-named model laid over them.
+ *
+ * The merge is per call and never mutates config, so a model named on one
+ * delegation cannot reach the next one. It is a merge rather than a
+ * replacement because the configured block also carries the child's provider
+ * and token ceiling — overwriting those with a bare model would silently
+ * uncap a child whose deployment had deliberately capped it.
+ *
+ * The child's PROVIDER is deliberately not touched. `resolveChildAgentOptions`
+ * pairs the named model with the configured provider, or failing that the
+ * parent's, so naming a model selects within the route the deployment already
+ * uses rather than re-routing to a vendor the caller guessed at. A model the
+ * inherited provider does not host fails at the child's first call, which is
+ * the only place that can actually tell.
+ *
+ * An absent model returns the configured block UNCHANGED rather than spreading
+ * `model: undefined` onto a copy. An own key holding `undefined` is not the
+ * same as no key: `resolveChildAgentOptions` spreads the requested options over
+ * the parent's, so that key would erase the parent's model and drop the child
+ * onto the deployment default — the opposite of inheriting the delegating
+ * conversation's model, and invisible to any assertion that only checks the
+ * value is undefined.
+ *
+ * A blank or non-string model is refused rather than forwarded. The argument
+ * validator permits undeclared and mistyped keys (see `resolveDelegationRun`
+ * for the same hazard), so a number or an empty string would otherwise travel
+ * intact into `agents.create` and start a child whose route resolves to
+ * nothing — a failure the caller would read as the deployment being broken
+ * rather than as its own argument.
+ * @param config - this tool instance's configuration.
+ * @param requested - the model named on this call, if any.
+ * @returns the options to put on the start request, or `undefined` to send none.
+ */
+function childAgentOptions(config: Config, requested: unknown): AgentOptions | undefined {
+  if (requested === undefined) return config.agentOptions
+  if (typeof requested !== 'string') {
+    throw new Error(`subagent: \`model\` must be a string naming one model, received ${typeof requested}`)
+  }
+  const model = requested.trim()
+  if (model.length === 0) {
+    throw new Error(
+      'subagent: `model` was given as a blank string — omit the parameter to run the child on the default model, or name a real one',
+    )
+  }
+  return { ...config.agentOptions, model }
+}
+
 interface DelegationRunRequest {
   readonly run_in_background?: boolean
 }
@@ -315,6 +364,13 @@ export function apply(ctx: Context, config: Config): void {
           required: true,
           description: wording.promptDescription,
         },
+        model: {
+          type: 'string',
+          description:
+            'The model the subagent runs on, named exactly as the deployment addresses it, and reached '
+            + 'through the same provider this conversation uses. Omit this to use the default, which is what '
+            + 'every delegation runs on unless you choose otherwise. Applies to this call only.',
+        },
         ...backgroundEnabled ? {
           run_in_background: {
             type: 'boolean' as const,
@@ -374,11 +430,12 @@ export function apply(ctx: Context, config: Config): void {
         }
 
         const maxDepth = typeof config.maxDepth === 'number' ? config.maxDepth : undefined
+        const agentOptions = childAgentOptions(config, args.model)
         const request = {
           label: args.description,
           prompt: [{ type: 'text', text: args.prompt }] as ContentBlock[],
           parent,
-          ...config.agentOptions !== undefined ? { agentOptions: config.agentOptions } : {},
+          ...agentOptions !== undefined ? { agentOptions } : {},
           ...config.persona !== undefined ? { persona: config.persona } : {},
           ...config.toolFilter !== undefined ? { toolFilter: config.toolFilter } : {},
           ...maxDepth !== undefined ? { maxDepth } : {},
