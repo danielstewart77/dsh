@@ -165,7 +165,7 @@ describe('request-level dynamic profiles', () => {
     // profile set, so this is refused where it is written rather than stored
     // and then quietly disabling every route in the namespace.
     await expect(ctx.settings.update(NS, { providers: { 'not-a-real-provider': {} } }))
-      .rejects.toThrow(/resolves no models/)
+      .rejects.toThrow(/set the route's api/)
     expect(ctx.llm.listProviders().map(provider => provider.id)).toEqual(['openai'])
   })
 

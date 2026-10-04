@@ -16,6 +16,43 @@
 - id: hmr
   disabled: true
 
+# The harness's one provider. Every model this harness ever addresses is
+# reached through the hive inference proxy — never a vendor endpoint directly —
+# so the route is the harness's own fact and no profile declares it.
+#
+# It lists no models on purpose. A model is not a property of a harness, a
+# profile or a provider: a turn names one, and the agents and subagents inside
+# that turn name others. The proxy already answers for a model it cannot serve,
+# in words the operator can act on, so a catalogue here could only turn a model
+# the credential can address into one this process refuses.
+- id: llm-pi-ai
+  config:
+    providers:
+      hive-proxy:
+        displayName: Hive inference proxy
+        apiKeyEnv: HIVE_PROXY_KEY  # secret-guard: allow — a variable name, not a value
+        api: openai-completions
+        baseURL: !!js process.env.DSH_PROXY_BASE_URL
+        # The capacity assumed for a model nothing sizes — which, on an open
+        # route, is every model. The mind's own default model is what this is
+        # set from, so a conversation started on it is sized correctly and one
+        # that switches models is sized by a guess rather than by nothing.
+        defaultContextWindow: !!js Number(process.env.DSH_MODEL_CONTEXT_WINDOW) || undefined
+        # What a model on this route is assumed to accept. Both, because the
+        # alternative is this process refusing an image a vision model behind
+        # the proxy serves perfectly — a judgement about a model nobody here
+        # declared anything about. An image the model cannot take is refused
+        # where the knowledge is, at the endpoint.
+        defaultInput: [text, image]
+
+# The conversation's opening model, and nothing more: the gateway resolves it
+# per session from the mind's broker row, and every call inside the turn may
+# name another.
+- id: agent-default-model
+  config:
+    provider: hive-proxy
+    model: !!js process.env.DSH_MODEL
+
 - id: tools
   config:
     mode: !!js process.env.DSH_TOOLS_MODE

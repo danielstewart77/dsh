@@ -700,9 +700,16 @@ describe('provider profile lifecycle', () => {
     expect(resolveProfiles({}).size).toBe(0)
     expect(resolveProfiles(undefined).size).toBe(0)
     expect(() => resolveProfiles({ '': {} })).toThrow(/non-empty/)
-    // A route the installed catalog does not ship is allowed, but it has no
-    // defaults to fall back on: it must describe its own models.
-    expect(() => resolveProfiles({ 'not-real': {} })).toThrow(/resolves no models/)
+    // A route the installed catalog does not ship and that lists no models
+    // serves whatever a request names, so it needs no catalog — but it has no
+    // defaults to fall back on either, so it must say how to reach the
+    // endpoint, and both halves are named while the key can still be pointed at.
+    expect(() => resolveProfiles({ 'not-real': {} })).toThrow(/set the route's api/)
+    expect(() => resolveProfiles({ 'not-real': { api: 'openai-completions' } }))
+      .toThrow(/set the route's baseURL/)
+    // And it must size them, since one number sizes every model it serves.
+    expect(() => resolveProfiles({ 'not-real': { api: 'openai-completions', baseURL: 'https://x.test/v1' } }))
+      .toThrow(/sized by defaultContextWindow/)
     // The pre-release array shape and its per-profile provider field fail
     // loud with migration directions instead of half-working.
     expect(() => resolveProfiles([{ provider: 'openai' }] as never)).toThrow(/dict keyed by provider/)
@@ -898,5 +905,85 @@ describe('abort wiring', () => {
     }
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(server.requests).toHaveLength(1)
+  })
+})
+
+describe('a gateway route that lists no models', () => {
+  /** The shape the hive bundle ships: a route pi-ai never heard of, listing nothing. */
+  async function gateway(baseURL: string, overrides: Record<string, unknown> = {}): Promise<Context> {
+    vi.stubEnv('PI_TEST_KEY', 'test-key')
+    const ctx = new Context()
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(LlmPiAi, {
+      providers: {
+        'hive-proxy': {
+          apiKeyEnv: 'PI_TEST_KEY',
+          api: 'openai-completions',
+          baseURL,
+          defaultContextWindow: 131_072,
+          ...overrides,
+        },
+      },
+    })
+    return ctx
+  }
+
+  it('sends a model id nothing declared to the endpoint verbatim', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = await gateway(server.url)
+    const result = await assemble(ctx, {
+      provider: 'hive-proxy',
+      model: 'gpt-6-sol',
+      messages: [],
+    })
+    expect(result.finish).toEqual({ kind: 'stop' })
+    expect(server.requests[0]).toMatchObject({ model: 'gpt-6-sol' })
+  })
+
+  it('resolves a model id nothing declared, which is the path a turn prepares on', async () => {
+    const adapter = adapterOf({
+      'hive-proxy': {
+        apiKeyEnv: 'PI_TEST_KEY',
+        api: 'openai-completions',
+        baseURL: 'https://proxy.test/v1',
+        defaultContextWindow: 131_072,
+      },
+    })
+    // The agent loop resolves the model before it streams; an adapter that only
+    // materialized inside `stream` would refuse every turn while the streaming
+    // test above still passed.
+    await expect(adapter.resolveModel('hive-proxy', 'qwen35-131k')).resolves.toMatchObject({
+      provider: 'hive-proxy',
+      id: 'qwen35-131k',
+      name: 'qwen35-131k',
+    })
+  })
+
+  it('carries the endpoint\'s own refusal of a model it does not host', async () => {
+    const server = await mockServer([{
+      status: 404,
+      body: JSON.stringify({ error: { message: "Model 'nope' is not registered", code: 'UNKNOWN_MODEL' } }),
+    }])
+    const ctx = await gateway(server.url)
+    const result = await assemble(ctx, { provider: 'hive-proxy', model: 'nope', messages: [] })
+    expect(result.finish.kind).toBe('error')
+    // Which models exist is the endpoint's answer, so the endpoint's words are
+    // what reaches the operator — a local refusal would name a model the
+    // credential may well be able to address.
+    expect(JSON.stringify(result.finish)).toContain("Model 'nope' is not registered")
+    expect(server.requests[0]).toMatchObject({ model: 'nope' })
+  })
+
+  it('sends a reasoning effort for a model id nothing declared', async () => {
+    const server = await mockServer([{ events: textEvents }])
+    const ctx = await gateway(server.url)
+    const result = await assemble(ctx, {
+      provider: 'hive-proxy',
+      model: 'gpt-6-sol',
+      messages: [],
+      reasoningEffort: ReasoningEffortId('high'),
+    })
+    expect(result.finish).toEqual({ kind: 'stop' })
+    expect(server.requests[0]).toMatchObject({ model: 'gpt-6-sol', reasoning_effort: 'high' })
   })
 })

@@ -262,6 +262,15 @@ export interface RouteCatalogRequest {
   compat?: PiAiCompatProfile
   /** Context capacity for a model neither the entry nor the catalog sizes. */
   defaultContextWindow: number
+  /**
+   * Whether {@link defaultContextWindow} is a number the deployment named, as
+   * opposed to the fallback resolution supplied. An open route must have named
+   * one: it sizes every model it ever serves from that single number, and a
+   * fallback would size them all at a figure nobody picked — which compaction
+   * then reads as the ceiling, firing late on a small model and never at all
+   * where the endpoint truncates silently instead of refusing.
+   */
+  declaredContextWindow?: boolean
   /** Output capability for a model neither the entry nor the catalog sizes. */
   defaultMaxTokens: number
   /** Modalities for a model neither the entry nor the catalog declares. */
@@ -418,6 +427,24 @@ function resolveModelCompat(
   }
 }
 
+/**
+ * The reasoning capability a model materialized on an open route carries:
+ * every level pi-ai knows, each sent under its own name, with `off` left to
+ * mean the parameter's absence.
+ *
+ * Declaring none is not the neutral choice it looks like. pi-ai reports a model
+ * with no reasoning metadata as supporting `off` alone, and the adapter then
+ * refuses any other effort outright — so a route that declares nothing about
+ * its models would refuse every reasoning request on all of them, including
+ * one the endpoint serves happily, and a route-level `reasoning` default would
+ * refuse every request it ever made. Which efforts a gateway's model accepts is
+ * the gateway's to answer, so the effort is sent and the endpoint refuses what
+ * it does not know.
+ */
+const OPEN_ROUTE_REASONING_EFFORTS: PiAiReasoningEfforts = Object.fromEntries(
+  THINKING_LEVELS.map(level => [level, level === 'off' ? null : level]),
+)
+
 /** One route's materialized catalog, plus the request caps its profile chose. */
 export interface RouteCatalog {
   /** The materialized models in configuration order. */
@@ -433,6 +460,18 @@ export interface RouteCatalog {
    * picked, so only an explicit configuration lands here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /**
+   * Builds the descriptor for a model id this route never listed, present only
+   * on an **open** route: one the installed catalog does not describe and whose
+   * profile lists no models. Such a route is a gateway, and a gateway's model
+   * set is the gateway's to know — a listing baked into configuration would
+   * have to be edited every time the endpoint gained a deployment, and until it
+   * was, a model the credential could address would be refused here rather than
+   * reached. So the id a request names is taken as given and sized from the
+   * route's own defaults; whether it exists is answered by the endpoint, in the
+   * endpoint's own words.
+   */
+  materialize?: (id: string) => Model<Api>
 }
 
 /**
@@ -480,19 +519,35 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
   const entries: readonly PiAiModelProfile[] = configured.length > 0
     ? configured
     : [...defaults.values()].map(model => ({ id: model.id, ...overrides[model.id] }))
-  if (entries.length === 0) {
-    invalid(provider, 'resolves no models; the installed catalog does not describe this route, so its models'
-      + ' must be listed in configuration')
-  }
   const routeApi = sharedCatalogApi(defaults)
+  // An **open** route: the installed catalog describes nothing and the profile
+  // lists nothing, so there is no catalog to serve and every model the route
+  // ever serves is one a request names. A gateway is the case this exists for,
+  // and its own endpoint is the only thing that knows what it hosts. The route
+  // must still say how to reach it, and both failures land here, while the
+  // configuration key that caused them can still be named.
+  const open = entries.length === 0
+  if (open) {
+    if ((request.api ?? routeApi) === undefined) {
+      invalid(provider, 'lists no models, so it serves whatever model a request names; set the route\'s api to'
+        + ' the wire protocol its endpoint speaks')
+    }
+    if ((request.baseURL ?? providerBaseUrl) === undefined) {
+      invalid(provider, 'lists no models, so it serves whatever model a request names; set the route\'s baseURL'
+        + ' to its endpoint')
+    }
+    if (request.declaredContextWindow !== true) {
+      invalid(provider, 'lists no models, so every model it serves is sized by defaultContextWindow; set it to'
+        + ' the capacity this endpoint\'s models actually have rather than leaving them sized by a number'
+        + ' nobody picked')
+    }
+  }
   const routeCompatDefined = request.compat?.thinkingFormat !== undefined
     || request.compat?.supportsReasoningEffort !== undefined
   const seen = new Set<string>()
   const configuredMaxTokens = new Map<string, number>()
-  const models = entries.map((entry) => {
+  const buildModel = (entry: PiAiModelProfile): Model<Api> => {
     if (entry.id.length === 0) invalid(provider, 'has a model with an empty id')
-    if (seen.has(entry.id)) invalid(provider, `lists model "${entry.id}" more than once`)
-    seen.add(entry.id)
     const base = defaults.get(entry.id)
     const api = request.api ?? base?.api ?? routeApi
     if (api === undefined) {
@@ -537,10 +592,25 @@ export function resolveRouteModels(request: RouteCatalogRequest): RouteCatalog {
       ...resolveModelReasoning(provider, entry, base),
       ...resolveModelCompat(provider, entry, request.compat, base, api),
     }
+  }
+  const models = entries.map((entry) => {
+    if (seen.has(entry.id)) invalid(provider, `lists model "${entry.id}" more than once`)
+    seen.add(entry.id)
+    return buildModel(entry)
   })
-  if (routeCompatDefined && !models.some(model => model.api === 'openai-completions')) {
+  // An open route has no models to inspect, so its protocol answers for them:
+  // every model it materializes speaks the route's own api, which is the one
+  // thing an open route is required to declare.
+  const routeSpeaksCompletions = open
+    ? (request.api ?? routeApi) === 'openai-completions'
+    : models.some(model => model.api === 'openai-completions')
+  if (routeCompatDefined && !routeSpeaksCompletions) {
     invalid(provider, 'sets compat reasoning switches, but no model on the route speaks openai-completions;'
       + ' thinkingFormat and supportsReasoningEffort exist only on that protocol')
   }
-  return { models, configuredMaxTokens }
+  return {
+    models,
+    configuredMaxTokens,
+    ...open ? { materialize: (id: string) => buildModel({ id, reasoningEfforts: OPEN_ROUTE_REASONING_EFFORTS }) } : {},
+  }
 }

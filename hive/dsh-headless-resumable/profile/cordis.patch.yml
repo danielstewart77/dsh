@@ -1,23 +1,9 @@
-# The hive profile: the hive bundle over dsh-base, with the model, its provider
-# route and that route's endpoint all read from the spawn's environment.
+# The hive profile: the hive bundle over dsh-base, and nothing else.
 #
-# Nothing here is defaulted. The gateway resolves the model per session from the
-# mind's broker row and the adapter puts it on the spawn; a profile holding a
-# house favourite is how a wrong model goes unnoticed for weeks. An unset value
-# fails the boot rather than substituting one.
-- id: agent-default-model
-  config:
-    provider: !!js process.env.DSH_PROVIDER
-    model: !!js process.env.DSH_MODEL
-
-- id: llm-pi-ai
-  config:
-    providers:
-      hive-proxy:
-        displayName: Hive inference proxy
-        apiKeyEnv: HIVE_PROXY_KEY
-        api: openai-completions
-        baseURL: !!js process.env.DSH_PROXY_BASE_URL
-        models:
-          - id: !!js process.env.DSH_MODEL
-            contextWindow: !!js Number(process.env.DSH_MODEL_CONTEXT_WINDOW)
+# It declares no provider and no model. There is no such thing as a harness's
+# model or a profile's model — a turn names one, and the agents and subagents
+# inside that turn name others. The one provider every model is reached
+# through, the hive inference proxy, is the harness's own fact and lives in the
+# bundle; the conversation's opening model is resolved per session by the
+# gateway and arrives on the spawn's environment.
+[]
