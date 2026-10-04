@@ -260,21 +260,19 @@ function providerWording(inheritsConversation: boolean): { description: string; 
  * conversation's model, and invisible to any assertion that only checks the
  * value is undefined.
  *
- * A blank or non-string model is refused rather than forwarded. The argument
- * validator permits undeclared and mistyped keys (see `resolveDelegationRun`
- * for the same hazard), so a number or an empty string would otherwise travel
- * intact into `agents.create` and start a child whose route resolves to
- * nothing — a failure the caller would read as the deployment being broken
- * rather than as its own argument.
+ * A blank model is refused rather than forwarded. The parameter is declared a
+ * string, so the argument validator rejects a mistyped one before this runs —
+ * but it supports neither `minLength` nor `pattern`, so emptiness is this
+ * function's to catch. An empty string is not nullish: it would beat both the
+ * configured and the inherited model, travel intact into `agents.create`, and
+ * start a child whose route resolves to nothing — a failure the caller would
+ * read as the deployment being broken rather than as its own argument.
  * @param config - this tool instance's configuration.
  * @param requested - the model named on this call, if any.
  * @returns the options to put on the start request, or `undefined` to send none.
  */
-function childAgentOptions(config: Config, requested: unknown): AgentOptions | undefined {
+function childAgentOptions(config: Config, requested: string | undefined): AgentOptions | undefined {
   if (requested === undefined) return config.agentOptions
-  if (typeof requested !== 'string') {
-    throw new Error(`subagent: \`model\` must be a string naming one model, received ${typeof requested}`)
-  }
   const model = requested.trim()
   if (model.length === 0) {
     throw new Error(

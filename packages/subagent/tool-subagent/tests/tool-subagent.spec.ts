@@ -989,7 +989,7 @@ describe('dsh-tool-subagent continuable background mode', () => {
   })
 
   /** Boot the real continuable stack without any model-facing follow-up adapter. */
-  async function continuableSetup() {
+  async function continuableSetup(agentOptions?: { model: string }) {
     const ctx = new Context()
     await mountAgentLoopTestDependencies(ctx)
     const root = mkdtempSync(path.join(tmpdir(), 'dsh-tool-subagent-continuable-'))
@@ -1000,7 +1000,11 @@ describe('dsh-tool-subagent continuable background mode', () => {
     await ctx.plugin(SubagentSpawn, { providerName: 'spawn' })
     await ctx.plugin(LocalJobRegistry)
     await ctx.plugin(ToolTasks, {})
-    await ctx.plugin(tool, { provider: 'spawn', backgroundMode: 'continuable' })
+    await ctx.plugin(tool, {
+      provider: 'spawn',
+      backgroundMode: 'continuable',
+      ...agentOptions !== undefined ? { agentOptions } : {},
+    })
     ctx.llm.registerAdapter(['mock'], new MockAdapter([
       textResponse('continuable answer'),
     ]))
@@ -1009,10 +1013,10 @@ describe('dsh-tool-subagent continuable background mode', () => {
   }
 
   it('carries the named model onto a continuable delegation', async () => {
-    // The continuable route hands its own request to startContinuable and
-    // persists the model onto the child's descriptor, so a request built
-    // separately there would strand the child on the default for its whole life.
-    const { ctx, parent } = await continuableSetup()
+    // The continuable route hands its own request to startContinuable, and the
+    // configured default differs — so a request rebuilt there from the config
+    // rather than the merge is caught, not just one that drops the model.
+    const { ctx, parent } = await continuableSetup({ model: 'configured-model' })
     const startContinuable = vi.spyOn(ctx.subagents, 'startContinuable')
     await callSubagent(
       ctx,
@@ -1387,8 +1391,8 @@ describe('per-call child model', () => {
   })
 
   it('refuses a model that is not a string', async () => {
-    // The argument validator carries undeclared and mistyped keys through, so
-    // the type has to be enforced here or a number reaches agents.create.
+    // The schema's `type: 'string'` is the whole enforcement: drop it and a
+    // number travels into agentOptions and on to agents.create.
     const { ctx, requests } = await captureStarts('model-mistyped', {})
     const result = await callSubagent(ctx, { description: 'd', prompt: 'p', model: 7 })
     expect(result.isError).toBe(true)
