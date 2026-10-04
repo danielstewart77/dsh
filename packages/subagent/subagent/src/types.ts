@@ -88,6 +88,13 @@ export interface SubagentCapabilities {
   readonly depthLimit: boolean
   readonly toolFilter: boolean
   readonly persona: boolean
+  /**
+   * Whether the provider routes the child by `agentOptions` — its provider,
+   * model and token ceiling — rather than by a route of its own. A child in
+   * another process runs on whatever model that process was configured with,
+   * and cannot be pointed at one from here.
+   */
+  readonly agentOptions: boolean
 }
 
 /**

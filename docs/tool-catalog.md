@@ -1488,6 +1488,10 @@ Delegate a self-contained task to a subagent (a separate agent that works in its
       "type": "string",
       "description": "The complete, self-contained task for the subagent. It does not share this conversation's context, so include everything it needs."
     },
+    "model": {
+      "type": "string",
+      "description": "The model the subagent runs on, named exactly as the deployment addresses it. It is reached through this subagent's own provider, so name a model that provider serves. Omit this to use the default, which is what every delegation runs on unless you choose otherwise. Applies to this call only."
+    },
     "run_in_background": {
       "type": "boolean",
       "description": "Whether to run as a background job and return its id. Defaults to false; collect with job_output or stop with job_kill."
