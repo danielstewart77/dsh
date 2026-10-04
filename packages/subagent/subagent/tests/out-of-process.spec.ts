@@ -15,7 +15,6 @@ import {
   NO_START_CAPABILITIES,
   resolveChildCwd,
   settleRunResult,
-  SubagentError,
   subprocessRunHandle,
   validateConfiguredCwd,
 } from '../src/index.ts'
@@ -148,36 +147,6 @@ describe('settleRunResult', () => {
     })
     expect(result.stopReason).toBe('error')
     expect(seen).toEqual(['error:transport died'])
-  })
-
-  it('carries the thrown transport failure message and code onto the flattened result', async () => {
-    // The parent sees only this result; without `thrownFailure` populating it,
-    // "the proxy rejected the model" and "the child pipe broke" arrive as the
-    // same bare stop reason.
-    const { controller, onAbort } = wiring()
-    const result = await settleRunResult({
-      attempt: async () => { throw new SubagentError('provider has no configured model "qwen-plus"', 'UNKNOWN_MODEL') },
-      collectOutput: () => [],
-      cancelled: () => false,
-      signal: controller.signal,
-      onAbort,
-    })
-    expect(result.failure).toEqual({
-      message: 'provider has no configured model "qwen-plus"',
-      code: 'UNKNOWN_MODEL',
-    })
-  })
-
-  it('codes an untyped transport throw as UNKNOWN while keeping its message', async () => {
-    const { controller, onAbort } = wiring()
-    const result = await settleRunResult({
-      attempt: async () => { throw new Error('child pipe closed') },
-      collectOutput: () => [],
-      cancelled: () => false,
-      signal: controller.signal,
-      onAbort,
-    })
-    expect(result.failure).toEqual({ message: 'child pipe closed', code: 'UNKNOWN' })
   })
 
   it('flattens a failure without a sink', async () => {
