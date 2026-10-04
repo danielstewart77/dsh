@@ -31,6 +31,12 @@ function runOutcome(result: SubagentResult): JobOutcome {
     case 'aborted':
       return { status: 'killed' }
     case 'error':
+      // The child's own message, when the run recovered one: a background
+      // delegation reports its outcome through this detail and nothing else,
+      // so a bare `error` leaves the parent with no account of the failure.
+      return result.failure === undefined
+        ? { status: 'failed', detail: result.stopReason }
+        : { status: 'failed', detail: `${result.stopReason}: ${result.failure.message} (${result.failure.code})` }
     case 'max-tokens':
     case 'refusal':
       return { status: 'failed', detail: result.stopReason }

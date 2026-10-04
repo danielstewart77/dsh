@@ -207,10 +207,10 @@ describe('real @openai/codex 0.147.0 product', () => {
       parent: harness.parent,
       signal: new AbortController().signal,
     })
-    await expect(run.result).resolves.toEqual({
-      output: [],
-      stopReason: 'error',
-    })
+    const settled = await run.result
+    expect(settled.output).toEqual([])
+    expect(settled.stopReason).toBe('error')
+    expect(settled.failure?.code).toBe('UNKNOWN')
     await run.dispose()
 
     expect(existsSync(sideEffect)).toBe(false)

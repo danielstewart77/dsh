@@ -24,7 +24,7 @@ import {
 } from '@agentclientprotocol/sdk'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { AssistantOutputFold } from '@deepseek-ai/dsh-subagent'
+import { AssistantOutputFold, thrownFailure } from '@deepseek-ai/dsh-subagent'
 import type { SubagentResult, SubagentRun, SubagentStartRequest, SubagentStopReason } from '@deepseek-ai/dsh-subagent'
 import type { SubprocessHandle, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 
@@ -343,7 +343,7 @@ export async function startAcpRun(request: SubagentStartRequest, spec: AcpRunSpe
       } catch {
         // The diagnostic sink cannot reject the run result.
       }
-      return { output: collectOutput(), stopReason: 'error' }
+      return { output: collectOutput(), stopReason: 'error', failure: thrownFailure(toError(error)) }
     } finally {
       request.signal.removeEventListener('abort', onAbort)
     }

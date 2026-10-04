@@ -26,6 +26,7 @@ import {
   finalAssistantOutput,
   resolveChildAgentOptions,
   resolveChildDepth,
+  turnEndFailure,
 } from '@deepseek-ai/dsh-subagent'
 import type {
   ResolvedSubagentStartRequest,
@@ -223,11 +224,15 @@ function readResult(
   // Disposal can tear the owner down before the loop records its ordinary
   // `aborted` end, yielding `disposed` instead.
   const stopReason: SubagentStopReason = cancelled && recorded !== 'completed' ? 'aborted' : recorded
+  // The child's own failure travels with the stop reason; a cancellation that
+  // overrode a recorded failure still reports what that failure was.
+  const failure = turnEndFailure(lastEnd?.data.reason)
+  const detail = failure === undefined ? {} : { failure }
   if (structured !== undefined) {
     if (structured.captured !== undefined) {
-      return { output, structured: structured.captured.value, stopReason }
+      return { output, structured: structured.captured.value, stopReason, ...detail }
     }
     if (stopReason === 'completed') return { output, stopReason: cancelled ? 'aborted' : 'error' }
   }
-  return { output, stopReason }
+  return { output, stopReason, ...detail }
 }

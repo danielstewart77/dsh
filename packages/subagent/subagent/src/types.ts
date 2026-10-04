@@ -11,7 +11,7 @@
 
 import type { Agent, AgentOptions } from '@deepseek-ai/dsh-agent'
 import type { Branded } from '@deepseek-ai/dsh-brand'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { ContentBlock, LlmFailure } from '@deepseek-ai/dsh-llm'
 import type { SessionEvent, SessionId } from '@deepseek-ai/dsh-session'
 import type { ObjectJsonSchema, ToolRestriction } from '@deepseek-ai/dsh-tools'
 import type { SubagentDescriptorData } from './descriptor.ts'
@@ -242,6 +242,15 @@ export interface SubagentResult {
   readonly structured?: unknown
   /** Why the run ended. A non-`completed` reason means `output` may be partial. */
   readonly stopReason: SubagentStopReason
+  /**
+   * The child's own failure, when one is what ended the run: the provider's
+   * message and routing code, verbatim. A stop reason alone cannot tell a
+   * rejected model name from a crashed child, so a caller handed only
+   * `stopReason: 'error'` has to guess at the remedy. Absent when the run
+   * ended for any other reason, and absent when a failure path could not
+   * recover the detail.
+   */
+  readonly failure?: LlmFailure
 }
 
 /**

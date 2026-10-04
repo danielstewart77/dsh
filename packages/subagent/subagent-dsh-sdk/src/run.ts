@@ -16,7 +16,7 @@ import { DeepSeekHarness, type HarnessNotification } from '@deepseek-ai/dsh-sdk-
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import { SessionId, type SessionEvent, type TurnEndReason } from '@deepseek-ai/dsh-session'
 import type { SubagentResult, SubagentRun, SubagentStartRequest, SubagentStopReason } from '@deepseek-ai/dsh-subagent'
-import { AssistantOutputFold, settleRunResult, subprocessRunHandle } from '@deepseek-ai/dsh-subagent'
+import { AssistantOutputFold, settleRunResult, subprocessRunHandle, turnEndFailure } from '@deepseek-ai/dsh-subagent'
 import { scrubbedParentEnv } from '@deepseek-ai/dsh-subprocess'
 
 /** Resolved spawn spec for an SDK runtime child process (no defaults — see Config). */
@@ -184,7 +184,12 @@ export async function startSdkRun(request: SubagentStartRequest, spec: SdkRunSpe
       const lastEnd = turn.events.findLast(
         (event): event is Extract<SessionEvent, { type: 'turn/end' }> => event.type === 'turn/end',
       )
-      return { output: collectOutput(), stopReason: sdkStopReason(lastEnd?.data.reason) }
+      const failure = turnEndFailure(lastEnd?.data.reason)
+      return {
+        output: collectOutput(),
+        stopReason: sdkStopReason(lastEnd?.data.reason),
+        ...failure === undefined ? {} : { failure },
+      }
     },
     collectOutput,
     cancelled: () => flags.cancelled,

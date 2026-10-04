@@ -915,7 +915,13 @@ describe('run lifecycle and quiescence', () => {
         onError: (error) => { errors.push(error.message) },
       })
       child.settle({ exitCode: 9, signal: null })
-      await expect(run.result).resolves.toEqual({ output: [], stopReason: 'error' })
+      // The flattened result carries the child's own account of the exit, not
+      // just the stop reason: that message is all the delegating parent gets.
+      const settled = await run.result
+      expect(settled.output).toEqual([])
+      expect(settled.stopReason).toBe('error')
+      expect(settled.failure?.message).toContain('exited before the run settled (code 9')
+      expect(settled.failure?.code).toBe('UNKNOWN')
       expect(errors.at(-1)).toContain('code 9')
       await run.dispose().catch(() => {})
     }
@@ -926,7 +932,10 @@ describe('run lifecycle and quiescence', () => {
       })
       child.peer.respond(turnStart, { turn: { id: 'turn-1' } })
       child.fromChild.end()
-      await expect(run.result).resolves.toEqual({ output: [], stopReason: 'error' })
+      const torn = await run.result
+      expect(torn.output).toEqual([])
+      expect(torn.stopReason).toBe('error')
+      expect(torn.failure?.code).toBe('UNKNOWN')
       await run.dispose()
     }
   })

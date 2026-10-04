@@ -1488,3 +1488,37 @@ describe('per-call child model', () => {
     expect(seen?.agentOptions?.model).toBe('background-model')
   })
 })
+
+describe('a failed child reports its own failure', () => {
+  it('names the child failure message and code in the foreground tool result', async () => {
+    // The whole point of the `failure` field: an error result the parent model
+    // can act on. Without `withFailureDetail` reading it, this text is the
+    // bare words "subagent run failed" and a rejected model name is
+    // indistinguishable from a crashed child.
+    const ctx = new Context()
+    await ctx.plugin(SystemPrompt)
+    await ctx.plugin(ToolRuntime)
+    await ctx.plugin(SubagentRuntime)
+    ctx.subagents.registerProvider({
+      name: 'failing',
+      capabilities: { outputSchema: false, depthLimit: false, toolFilter: false, persona: false, agentOptions: true },
+      inheritsParentContext: false,
+      start: async () => ({
+        id: SessionId('failing-child'),
+        localAgent: undefined,
+        result: Promise.resolve({
+          output: [],
+          stopReason: 'error' as const,
+          failure: { message: 'pi-ai provider "cypher" has no configured model "qwen-plus"', code: 'UNKNOWN_MODEL' },
+        }),
+        dispose: async () => {},
+      }),
+    })
+    await ctx.plugin(tool, { provider: 'failing', maxDepth: 'provider-managed' })
+
+    const result = await callSubagent(ctx, { description: 'd', prompt: 'p' })
+    expect(result.isError).toBe(true)
+    expect(text(result)).toContain('has no configured model "qwen-plus"')
+    expect(text(result)).toContain('UNKNOWN_MODEL')
+  })
+})
