@@ -14,7 +14,7 @@
  * @module dsh-llm-pi-ai/config
  */
 
-import type { CacheRetention, ModelThinkingLevel, Provider, ThinkingBudgets, Transport } from '@earendil-works/pi-ai'
+import type { Api, CacheRetention, Model, ModelThinkingLevel, Provider, ThinkingBudgets, Transport } from '@earendil-works/pi-ai'
 import z from '@deepseek-ai/schemastery'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
@@ -166,6 +166,14 @@ export interface ResolvedPiAiProviderProfile
    * own, so a catalog capability must not appear here.
    */
   configuredMaxTokens: ReadonlyMap<string, number>
+  /**
+   * Builds the descriptor for a model this route never listed. Present only on
+   * an open route — one the installed catalog does not describe and whose
+   * profile lists no models — which is how a gateway route serves whatever
+   * model a request names without configuration holding a copy of the
+   * gateway's catalog.
+   */
+  materialize?: (id: string) => Model<Api>
 }
 
 /** Plugin configuration: the provider routes this instance owns. */
@@ -237,7 +245,13 @@ const profile = z.object({
   models: z.array(modelProfile),
   modelOverrides: z.dict(modelOverride),
   compat: compatProfile,
-  defaultContextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW),
+  // No schema default, unlike `defaultMaxTokens` and `defaultInput`: an open
+  // route sizes every model it ever serves from this one number, and a
+  // materialized default here would be indistinguishable from a deployment
+  // that picked it — which is how a 32k model gets compacted at 210k and never
+  // compacted at all. Resolution still falls back for a route that lists its
+  // own models, where a per-model `contextWindow` answers first.
+  defaultContextWindow: z.number().step(1).min(1),
   defaultMaxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS),
   defaultInput: z.array(z.union(MODALITIES)).default([...DEFAULT_INPUT]),
   headers: z.dict(z.string()),
@@ -344,6 +358,7 @@ export function resolveProfiles(
       ...source.modelOverrides === undefined ? {} : { modelOverrides: source.modelOverrides },
       ...source.compat === undefined ? {} : { compat: source.compat },
       defaultInput,
+      ...source.defaultContextWindow === undefined ? {} : { declaredContextWindow: true },
       defaultContextWindow: source.defaultContextWindow ?? DEFAULT_CONTEXT_WINDOW,
       defaultMaxTokens: source.defaultMaxTokens ?? DEFAULT_MAX_TOKENS,
     })
@@ -358,6 +373,7 @@ export function resolveProfiles(
       ...rest.headers === undefined ? {} : { headers: { ...rest.headers } },
       ...rest.thinkingBudgets === undefined ? {} : { thinkingBudgets: { ...rest.thinkingBudgets } },
       configuredMaxTokens: catalog.configuredMaxTokens,
+      ...catalog.materialize === undefined ? {} : { materialize: catalog.materialize },
       piProvider: buildProvider({
         provider,
         displayName,

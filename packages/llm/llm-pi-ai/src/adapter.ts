@@ -59,6 +59,13 @@ interface PiAiSnapshot {
   profiles: ReadonlyMap<string, ResolvedPiAiProviderProfile>
   /** Providers for exactly those profiles; never mutated once published. */
   models: Models
+  /**
+   * Descriptors built on demand for ids an open route never listed, keyed by
+   * route and id. Held here rather than rebuilt per call so two requests naming
+   * one model within a snapshot stream against the same descriptor, and so the
+   * cache dies with the configuration that produced it.
+   */
+  materialized: Map<string, Model<Api>>
 }
 
 /** Constructor options for {@link PiAiAdapter}: the two resolution hooks the plugin owns. */
@@ -201,7 +208,7 @@ export class PiAiAdapter extends LlmAdapter {
     if (this.snapshot?.profiles === profiles) return this.snapshot
     const models: MutableModels = createModels()
     for (const profile of profiles.values()) models.setProvider(profile.piProvider)
-    this.snapshot = { profiles, models }
+    this.snapshot = { profiles, models, materialized: new Map() }
     return this.snapshot
   }
 
@@ -214,14 +221,38 @@ export class PiAiAdapter extends LlmAdapter {
     return profile
   }
 
-  /** The configured descriptor for one exact route/model pair within one snapshot. */
+  /**
+   * The descriptor for one route/model pair within one snapshot.
+   *
+   * An **open** route — a gateway, whose profile lists no models because only
+   * the gateway knows what it hosts — materializes the id as asked rather than
+   * refusing it. Which models exist there is the endpoint's question to answer,
+   * in the endpoint's own words; a refusal invented here would name a model the
+   * credential can perfectly well address, and would have to be edited into
+   * configuration before the gateway's newest deployment could be reached at
+   * all. A route that does serve a catalog still refuses what it does not list,
+   * because there the catalog is the truth.
+   */
   private modelOf(snapshot: PiAiSnapshot, provider: string, model: string): Model<Api> {
-    this.profileOf(snapshot, provider)
+    const profile = this.profileOf(snapshot, provider)
     const resolved = snapshot.models.getModel(provider, model)
-    if (resolved === undefined) {
-      throw new LlmError(`pi-ai provider "${provider}" has no configured model "${model}"`, 'UNKNOWN_MODEL')
+    if (resolved !== undefined) return resolved
+    if (profile.materialize !== undefined) {
+      // Reported as the request's own fault, in the adapter's error shape. The
+      // builder's refusals are configuration sentences about a models list this
+      // route does not have, and they are plain `Error`s, so retry
+      // classification and the error surface would both read one as unknown.
+      if (model.length === 0) {
+        throw new LlmError(`pi-ai provider "${provider}" was asked to stream with no model named`, 'UNKNOWN_MODEL')
+      }
+      const key = `${provider}\u0000${model}`
+      const cached = snapshot.materialized.get(key)
+      if (cached !== undefined) return cached
+      const built = profile.materialize(model)
+      snapshot.materialized.set(key, built)
+      return built
     }
-    return resolved
+    throw new LlmError(`pi-ai provider "${provider}" has no configured model "${model}"`, 'UNKNOWN_MODEL')
   }
 
   override providerInfo(provider: string): LlmProviderInfo {
