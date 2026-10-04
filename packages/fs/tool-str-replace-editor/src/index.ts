@@ -236,6 +236,54 @@ async function viewPath(
   return formatFileView(target.displayPath, content, maxOutputChars, viewRange)
 }
 
+/** How much of a line is quoted back in a mismatch report, per side. */
+const MISMATCH_LINE_QUOTE = 200
+
+/**
+ * Why an `old_str` did not match, in terms a next turn can act on.
+ *
+ * Quoting the whole `old_str` back is the unhelpful answer: measured on a real
+ * run, one was 6,726 characters and differed from the file by a single closing
+ * parenthesis on its ninety-ninth line. So the file is anchored on the first
+ * line of `old_str` and walked forward, and what comes back is the first line
+ * that actually diverged with both sides beside each other. A model that sent a
+ * block it reconstructed from memory can then fix the one line it got wrong
+ * instead of resending the block.
+ * @param before - the file's current contents.
+ * @param oldValue - the block the call expected to find.
+ * @returns a sentence naming the divergence.
+ */
+function editMismatchDetail(before: string, oldValue: string): string {
+  const wanted = oldValue.split('\n')
+  const first = wanted[0] ?? ''
+  const fileLines = before.split('\n')
+  const anchor = fileLines.indexOf(first)
+  if (anchor === -1) {
+    return `Its first line is not in the file either: ${quoteLine(first)}.`
+  }
+  for (let step = 1; step < wanted.length; step += 1) {
+    const expected = wanted[step] ?? ''
+    const actual = fileLines[anchor + step]
+    if (actual === expected) continue
+    const lineNumber = anchor + step + 1
+    return actual === undefined
+      ? `It matches from line ${anchor + 1} but the file ends at line ${fileLines.length}, `
+        + `before its line ${step + 1}: ${quoteLine(expected)}.`
+      : `It matches from line ${anchor + 1} until line ${lineNumber}, where it expects `
+        + `${quoteLine(expected)} but the file has ${quoteLine(actual)}.`
+  }
+  // Every line matched one-for-one, so the difference is inside a line the walk
+  // compared equal — only reachable when `old_str` is a single line that occurs
+  // nowhere, or when the anchor matched a later duplicate.
+  return `Its first line is at line ${anchor + 1}, but the block does not match verbatim from there.`
+}
+
+/** One line of either side, quoted and capped, with its invisibles kept legible. */
+function quoteLine(line: string): string {
+  const capped = line.length > MISMATCH_LINE_QUOTE ? `${line.slice(0, MISMATCH_LINE_QUOTE)}…` : line
+  return JSON.stringify(capped)
+}
+
 async function createFile(
   ctx: Context,
   policy: MutationPolicy,
@@ -297,7 +345,8 @@ async function replaceInFile(
   const offset = offsets[0]
   if (offset === undefined) {
     throw new FsError(
-      `No replacement was performed, old_str \`${oldValue}\` did not appear verbatim in ${target.displayPath}.`,
+      `No replacement was performed: old_str did not appear verbatim in ${target.displayPath}. `
+      + editMismatchDetail(before, oldValue),
       'FS_EDIT_NOT_FOUND',
     )
   }
