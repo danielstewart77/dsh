@@ -10,7 +10,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import { defineTool, ToolArgsError } from '@deepseek-ai/dsh-tools'
 import type { AgentOptions } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { JsonValue } from '@deepseek-ai/dsh-session'
@@ -235,6 +235,58 @@ function providerWording(inheritsConversation: boolean): { description: string; 
   }
 }
 
+/**
+ * Resolve the child's agent options for one call: the configured defaults,
+ * with a caller-named model laid over them.
+ *
+ * The merge is per call and never mutates config, so a model named on one
+ * delegation cannot reach the next one. It is a merge rather than a
+ * replacement because the configured block also carries the child's provider
+ * and token ceiling — overwriting those with a bare model would silently
+ * uncap a child whose deployment had deliberately capped it.
+ *
+ * The child's PROVIDER is deliberately not touched. `resolveChildAgentOptions`
+ * pairs the named model with the configured provider, or failing that the
+ * parent's, so naming a model selects within the route the deployment already
+ * uses rather than re-routing to a vendor the caller guessed at — which is why
+ * the parameter says "this subagent's own provider" rather than the
+ * conversation's: a configured `agentOptions.provider` is not the parent's. A
+ * model that provider does not host fails at the child's first call, which is
+ * the only place that can actually tell.
+ *
+ * An absent model returns the configured block UNCHANGED rather than spreading
+ * `model: undefined` onto a copy. An own key holding `undefined` is not the
+ * same as no key: `resolveChildAgentOptions` spreads the requested options over
+ * the parent's, so that key would erase the parent's model and drop the child
+ * onto the deployment default — the opposite of inheriting the delegating
+ * conversation's model, and invisible to any assertion that only checks the
+ * value is undefined.
+ *
+ * A blank model is refused rather than forwarded, as a `ToolArgsError` and
+ * never a bare one: an uncoded throw reads as a tool body that ran and failed,
+ * so the run report tallies a refused call as a served one. The parameter is
+ * declared a string, so the argument validator rejects a mistyped one before
+ * this runs — but it supports neither `minLength` nor `pattern`, so emptiness
+ * is this function's to catch. An empty string is not nullish: it would beat
+ * both the configured and the inherited model, travel intact into
+ * `agents.create`, and start a child whose route resolves to nothing — a
+ * failure the caller would read as the deployment being broken rather than as
+ * its own argument.
+ * @param config - this tool instance's configuration.
+ * @param requested - the model named on this call, if any.
+ * @returns the options to put on the start request, or `undefined` to send none.
+ */
+function childAgentOptions(config: Config, requested: string | undefined): AgentOptions | undefined {
+  if (requested === undefined) return config.agentOptions
+  const model = requested.trim()
+  if (model.length === 0) {
+    throw new ToolArgsError([
+      'model must name one model, or be omitted to run the child on the default model',
+    ])
+  }
+  return { ...config.agentOptions, model }
+}
+
 interface DelegationRunRequest {
   readonly run_in_background?: boolean
 }
@@ -288,6 +340,19 @@ export function apply(ctx: Context, config: Config): void {
         + 'set maxDepth: \'provider-managed\' to leave the recursion budget to the provider',
       )
     }
+    // A provider that routes its own children cannot honor a model named here.
+    // Refusing at mount is the same bargain as maxDepth above: the deployment
+    // learns its configuration is inert now, rather than every delegation
+    // succeeding on a model nobody asked for. The model-facing parameter is
+    // withheld on such a provider for the same reason — advertising a control
+    // the child will ignore is worse than not offering it.
+    const routable = provider.capabilities.agentOptions
+    if (!routable && config.agentOptions !== undefined) {
+      throw new Error(
+        `tool-subagent: provider "${provider.name}" routes its own children (no agentOptions capability) — `
+        + 'remove `agentOptions` from this instance\'s config; it would be accepted and ignored',
+      )
+    }
     const wording = providerWording(provider.inheritsParentContext)
     if (continuable && provider.prepareContinuable === undefined) {
       throw new Error(
@@ -315,6 +380,16 @@ export function apply(ctx: Context, config: Config): void {
           required: true,
           description: wording.promptDescription,
         },
+        ...routable ? {
+          model: {
+            type: 'string' as const,
+            description:
+              'The model the subagent runs on, named exactly as the deployment addresses it. It is reached '
+              + 'through this subagent\'s own provider, so name a model that provider serves. Omit this to use '
+              + 'the default, which is what every delegation runs on unless you choose otherwise. Applies to '
+              + 'this call only.',
+          },
+        } : {},
         ...backgroundEnabled ? {
           run_in_background: {
             type: 'boolean' as const,
@@ -374,11 +449,19 @@ export function apply(ctx: Context, config: Config): void {
         }
 
         const maxDepth = typeof config.maxDepth === 'number' ? config.maxDepth : undefined
+        // Schema omission is advertising, not enforcement — the validator
+        // carries undeclared keys through, so the opt-out holds here too.
+        if (!routable && args.model !== undefined) {
+          throw new ToolArgsError([
+            `model cannot be chosen for this subagent: provider "${provider.name}" routes its own children`,
+          ])
+        }
+        const agentOptions = childAgentOptions(config, args.model)
         const request = {
           label: args.description,
           prompt: [{ type: 'text', text: args.prompt }] as ContentBlock[],
           parent,
-          ...config.agentOptions !== undefined ? { agentOptions: config.agentOptions } : {},
+          ...agentOptions !== undefined ? { agentOptions } : {},
           ...config.persona !== undefined ? { persona: config.persona } : {},
           ...config.toolFilter !== undefined ? { toolFilter: config.toolFilter } : {},
           ...maxDepth !== undefined ? { maxDepth } : {},
