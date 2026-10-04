@@ -284,6 +284,67 @@ describe('tool-str-replace-editor', () => {
     expect(await readFile(sample, 'utf8')).toBe('fresh')
   })
 
+  // Measured on a real run: a 6,726-character old_str differed from the file by
+  // one closing parenthesis on its ninety-ninth line, and quoting the whole
+  // block back gave the next turn nothing to act on.
+  it('names the line where a failed old_str diverged, and both sides of it', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'drifted.py')
+    await writeFile(sample, 'def run():\n    total = sum(values)\n    return total\n')
+
+    const result = await call(ctx, owner, {
+      command: 'str_replace',
+      file_path: sample,
+      old_str: 'def run():\n    total = sum(value)\n    return total',
+      new_str: 'def run():\n    return 0',
+    })
+
+    expect(result.isError).toBe(true)
+    const said = JSON.stringify(result.content)
+    expect(said).toContain('line 2')
+    expect(said).toContain('sum(value)')
+    expect(said).toContain('sum(values)')
+  })
+
+  it('says so plainly when the old_str first line is absent, without quoting the block', () => {
+    // The block is long on purpose: the report must not carry it.
+    const absent = `${'# nowhere in the file\n'.repeat(50)}`
+
+    return (async () => {
+      const { ctx, root, owner } = await setup()
+      const sample = join(root, 'unrelated.py')
+      await writeFile(sample, 'def run():\n    return 1\n')
+
+      const result = await call(ctx, owner, {
+        command: 'str_replace',
+        file_path: sample,
+        old_str: absent,
+        new_str: 'x',
+      })
+
+      expect(result.isError).toBe(true)
+      const said = JSON.stringify(result.content)
+      expect(said).toContain('first line is not in the file')
+      expect(said.length).toBeLessThan(absent.length)
+    })()
+  })
+
+  it('names the file ending early when old_str runs past its last line', async () => {
+    const { ctx, root, owner } = await setup()
+    const sample = join(root, 'short.py')
+    await writeFile(sample, 'def run():\n    return 1')
+
+    const result = await call(ctx, owner, {
+      command: 'str_replace',
+      file_path: sample,
+      old_str: 'def run():\n    return 1\n    print("more")',
+      new_str: 'x',
+    })
+
+    expect(result.isError).toBe(true)
+    expect(JSON.stringify(result.content)).toContain('the file ends at line')
+  })
+
   it('replaces text when the call names no command at all', async () => {
     const { ctx, root, owner } = await setup()
     const sample = join(root, 'inferred.txt')
@@ -424,7 +485,7 @@ describe('tool-str-replace-editor', () => {
       new_str: 'x',
     })
     expect(missing.isError).toBe(true)
-    expect(text(missing)).toContain(`old_str \`absent\` did not appear verbatim in ${ambiguous}`)
+    expect(text(missing)).toContain(`old_str did not appear verbatim in ${ambiguous}`)
     expect(text(missing)).not.toContain('old_string')
 
     const repeated = await call(ctx, owner, {
