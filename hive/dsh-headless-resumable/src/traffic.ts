@@ -90,18 +90,29 @@ function resultCallId(message: unknown, outstanding: ReadonlySet<string>): strin
   return oldest.done === true ? '' : oldest.value
 }
 
-/** The code a refusal carrying no class or code of its own is tallied under. */
+/**
+ * The code a failure carrying no class or code of its own is tallied under.
+ *
+ * This is a tool body that ran and threw something other than a `HarnessError`:
+ * the agent loop persists an `error` field only when the throw carried a class
+ * and code, so an ordinary `throw new Error(...)` inside a tool reaches the log
+ * as nothing but `isError` on the content. It is a failure and is counted as
+ * one — but it is the tool's own, not the harness turning the call away. Every
+ * path that genuinely refuses a call before or around the body now carries a
+ * code of its own (`DENIED_BY_POLICY`, `BLOCKED_AFTER_EXECUTE`, `INVALID_ARGS`,
+ * `UNKNOWN_TOOL`), so absence of a code no longer has to stand in for one.
+ */
 export const UNCODED_REFUSAL = 'REFUSED_UNCODED'
 
 /** Failure codes that mean the call never reached a tool body. */
-const UNSERVED_CODES: ReadonlySet<string> = new Set(['UNKNOWN_TOOL', 'INVALID_ARGS', UNCODED_REFUSAL])
+const UNSERVED_CODES: ReadonlySet<string> = new Set(['UNKNOWN_TOOL', 'INVALID_ARGS', 'DENIED_BY_POLICY'])
 
 /**
  * The argument names of a logged call, whose arguments are a JSON string.
  * @param raw - the `tool/call` event's `arguments` payload.
  * @returns the top-level keys, or an empty list for anything that is not an object.
  */
-function argumentNames(raw: string): string[] {
+export function argumentNames(raw: string): string[] {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return []
@@ -144,14 +155,29 @@ function failureMessage(error: object): string {
 }
 
 /**
- * The codes that mean the harness turned the call away before any tool ran: the
- * arguments did not satisfy the schema, or the model named a tool that is not
- * there. These classify a failure; they do not filter it. Everything is worth
- * stopping on while the harness is being hardened, and the classification is
- * what says where to look — `harness` means widen a schema or add a tool,
- * `tool` means read what the tool actually said.
+ * The codes that mean the harness turned the call away rather than a tool
+ * failing at its job: the arguments did not satisfy the schema, the model named
+ * a tool that is not there, a policy declined the call, or a policy rejected
+ * the result. These classify a failure; they do not filter it. Everything is
+ * worth stopping on while the harness is being hardened, and the classification
+ * is what says where to look — `harness` means widen a schema, a policy or the
+ * tool set, `tool` means read what the tool actually said.
+ *
+ * An uncoded failure is deliberately absent. It used to stand in for a refusal,
+ * because a refusal recorded with no code was the only shape the log had for
+ * one; now that every refusing path carries a code, the only thing left with no
+ * code is a tool body throwing a plain `Error` — `read` rejecting an empty
+ * `file_path`, an MCP server answering `isError` — which is the tool's own
+ * failure and nothing an outside mind can fix.
  */
-export const HARNESS_REFUSAL_CODES: readonly string[] = ['INVALID_ARGS', 'UNKNOWN_TOOL', UNCODED_REFUSAL]
+export const HARNESS_REFUSAL_CODES: readonly string[] = [
+  'INVALID_ARGS',
+  'UNKNOWN_TOOL',
+  // A `tools/pre-execute` gate or a guard declined the call before the body ran.
+  'DENIED_BY_POLICY',
+  // A `tools/post-execute` policy rejected the result of a body that did run.
+  'BLOCKED_AFTER_EXECUTE',
+]
 
 /** Where a failure came from: the harness turning a call away, or a tool that ran and failed. */
 export type FailureOrigin = 'harness' | 'tool'
@@ -164,19 +190,18 @@ export function failureOrigin(code: string): FailureOrigin {
 /**
  * The failure a result carries, by either of the two ways one is recorded.
  *
- * A tool that threw a `HarnessError` lands a structured `{ name, code, message }`
- * on the event. A tool refused before it ran — an escalation the runtime would
- * not grant, a policy that declined the call — lands nothing there and reports
- * itself only as `isError` on the result content the model reads. Measured on a
- * real run: three `write` calls were refused with "invalid escalation:
- * justification is only valid together with sandbox_permissions", and a tally
- * keyed on the structured field alone called that run 54 of 54 clean. A refusal
- * read as a success is worse than no tally at all, because it is the one number
- * the exam exists to produce.
+ * A throw carrying a `HarnessError`'s class and code lands a structured
+ * `{ name, code, message }` on the event. Anything else lands nothing there and
+ * reports itself only as `isError` on the result content the model reads.
+ * Measured on a real run: three `write` calls were refused with "invalid
+ * escalation: justification is only valid together with sandbox_permissions",
+ * and a tally keyed on the structured field alone called that run 54 of 54
+ * clean. A refusal read as a success is worse than no tally at all, because it
+ * is the one number the exam exists to produce.
  * @param data - the `tool/result` event's data.
  * @returns the failure, or nothing when the call really was served.
  */
-function resultFailure(
+export function resultFailure(
   data: { error?: { name: string; code: string; message?: string }; message: ToolResultMessage },
 ): { name: string; code: string; message: string } | undefined {
   const structured = data.error
@@ -186,11 +211,12 @@ function resultFailure(
   const content = data.message.content as readonly { isError?: boolean }[] | undefined
   if (content?.some(block => block.isError === true) !== true) return undefined
   // No class and no code were recorded, so the tally names it for what is known:
-  // the harness turned the call away without a tool raising.
-  return { name: 'ToolRefused', code: UNCODED_REFUSAL, message: refusalText(data.message) }
+  // something failed and did not say what it was. Every refusing path carries a
+  // code, so what is left here is a tool body that threw a plain `Error`.
+  return { name: 'ToolFailed', code: UNCODED_REFUSAL, message: refusalText(data.message) }
 }
 
-/** The text a refused result put in front of the model, which is the only account of it. */
+/** The text a failed result put in front of the model, which is the only account of it. */
 function refusalText(message: ToolResultMessage): string {
   const content = message.content as readonly { text?: unknown }[] | undefined
   const said = (content ?? [])

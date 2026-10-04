@@ -34,6 +34,7 @@ type TurnEndReason = SessionEvent<'turn/end'>['data']['reason']
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
 
+import { escalatorFromEnv, harnessRefusal } from './escalate.ts'
 import { firstFailedCall, NO_TRAFFIC, toolTraffic } from './traffic.ts'
 import type { FailedCall, ToolTraffic } from './traffic.ts'
 import type { SessionMode } from './startup.ts'
@@ -279,7 +280,9 @@ export function report(io: RunnerIo, turn: TurnReport): void {
  * @param config - the task and the conversation identity.
  * @param io - process-facing effects.
  */
-export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<void> {
+export async function run(
+  ctx: Context, config: Config, io: RunnerIo, escalator?: { drain(): Promise<void> },
+): Promise<void> {
   await ctx.get('loader')?.await()
   const agents = ctx.get('agents')
   const defaultModel = ctx.get('agentDefaultModel')
@@ -411,6 +414,10 @@ export async function run(ctx: Context, config: Config, io: RunnerIo): Promise<v
   }
   watch?.stop()
   await sessions.flush(agent.session)
+  // Awaited before the report, so a one-shot process does not exit with an
+  // escalation half-written. Each send carries its own deadline, so a gateway
+  // that never answers costs that deadline and not the run.
+  await escalator?.drain()
 
   const refusal = watch?.check()
   const { text, reason, turns } = summarize(agent.session.events, firstSeq)
@@ -514,7 +521,19 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
   const io: RunnerIo = { stdout: internals.stdout, stderr: internals.stderr, exit }
-  void run(ctx, config, io).catch((error: unknown) => {
+  // Subscribed before the turn is driven, so the opening round's refusals
+  // escalate as readily as round thirty's. Every committed event passes here,
+  // including a subagent's: a delegate refused the same tool for the same
+  // reason is the same gap, and reporting it under its own conversation is
+  // what makes one marker cover both.
+  const escalator = escalatorFromEnv(process.cwd())
+  if (escalator !== undefined) {
+    ctx.on('session/event', (session, event) => {
+      const refusal = harnessRefusal(session, event)
+      if (refusal !== undefined) escalator.report(refusal)
+    })
+  }
+  void run(ctx, config, io, escalator).catch((error: unknown) => {
     io.stderr.write(`dsh-hive: ${error instanceof Error ? error.message : String(error)}\n`)
     io.exit(1)
   })

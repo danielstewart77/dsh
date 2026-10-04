@@ -16,7 +16,7 @@
  * @module dsh-sandbox/escalation
  */
 
-import { assertNever } from '@deepseek-ai/dsh-llm'
+import { assertNever, HarnessError } from '@deepseek-ai/dsh-llm'
 import type { SandboxMode } from './index.ts'
 
 /**
@@ -41,6 +41,17 @@ export const WIDER_MODES: Record<string, readonly SandboxMode[]> = {
 export const ESCALATION_TARGETS: readonly SandboxMode[] = ['workspace-write', 'danger-full-access']
 
 /**
+ * The code an escalation-argument refusal is reported under.
+ *
+ * Coded rather than bare, because the durable `tool/result` keeps only a
+ * `HarnessError`'s class and code: a plain `Error` thrown here lands on the log
+ * indistinguishable from a tool body that ran and failed at its job, and the
+ * two have opposite remedies. The call never reached the body, so this is the
+ * same class of refusal as a schema violation and shares its code.
+ */
+const ESCALATION_ARGS_CODE = 'INVALID_ARGS'
+
+/**
  * Validate the escalation argument pairing a tool schema cannot express:
  * `sandbox_permissions` asks for power and must say why, so it requires a
  * `justification`, and a justification offered at all must be a non-empty
@@ -58,10 +69,10 @@ export const ESCALATION_TARGETS: readonly SandboxMode[] = ['workspace-write', 'd
  */
 export function validateEscalationArgs(sandboxPermissions: string | undefined, justification: string | undefined): void {
   if (sandboxPermissions !== undefined && justification === undefined) {
-    throw new Error('invalid escalation: sandbox_permissions requires a justification')
+    throw new HarnessError('invalid escalation: sandbox_permissions requires a justification', ESCALATION_ARGS_CODE)
   }
   if (justification !== undefined && justification.trim().length === 0) {
-    throw new Error('invalid justification: expected a non-empty sentence')
+    throw new HarnessError('invalid justification: expected a non-empty sentence', ESCALATION_ARGS_CODE)
   }
 }
 

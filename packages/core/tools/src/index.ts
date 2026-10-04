@@ -471,6 +471,32 @@ export const TOOL_ABORTED = 'ABORTED'
 /** Canonical error code for cancellation before a tool body was invoked. */
 export const TOOL_ABORTED_BEFORE_DISPATCH = 'ABORTED_BEFORE_DISPATCH'
 
+/**
+ * Canonical error code for a call the harness turned away before any tool body
+ * ran: a `tools/pre-execute` gate declined it, or a guard refused it outright.
+ *
+ * Coded deliberately, because the absence of a code is not a classification. A
+ * refusal recorded with no `info` is indistinguishable on the durable log from
+ * an ordinary tool body throwing a plain `Error` — {@link errorInfo} keeps only
+ * a `HarnessError`'s class and code — and a reader of that log then has to
+ * guess which side turned the call away. Measured on a real run: three `write`
+ * calls declined by the sandbox policy were counted as a tool's own failure,
+ * and the gap they named went unreported for thirty-eight rounds.
+ */
+export const TOOL_DENIED_BY_POLICY = 'DENIED_BY_POLICY'
+
+/**
+ * Canonical error code for a result a `tools/post-execute` policy rejected.
+ *
+ * Distinct from {@link TOOL_DENIED_BY_POLICY} because the body already ran and
+ * may already have written: the remedy is to widen the policy, not to add a
+ * tool, and a reader of the log must be able to tell the two apart.
+ */
+export const TOOL_BLOCKED_AFTER_EXECUTE = 'BLOCKED_AFTER_EXECUTE'
+
+/** Error class reported on both policy refusals, so the log names the side that refused. */
+export const TOOL_REFUSAL_ERROR_NAME = 'ToolRefused'
+
 /** Structured error metadata for a failed tool call (alongside the model-facing text). */
 export interface ToolErrorInfo {
   name: string
@@ -1493,7 +1519,10 @@ export class ToolRuntime extends Service {
           result: this.materializeFinalResult({
             content: [{ type: 'text', text: `Error: ${denialReason}` }],
             isError: true,
-            error: { message: denialReason },
+            error: {
+              message: denialReason,
+              info: { name: TOOL_REFUSAL_ERROR_NAME, code: TOOL_DENIED_BY_POLICY },
+            },
           }),
         })
       }
@@ -1750,7 +1779,10 @@ export class ToolRuntime extends Service {
       return this.markCanonical(exec, {
         content: decision.feedback,
         isError: true,
-        error: { message },
+        error: {
+          message,
+          info: { name: TOOL_REFUSAL_ERROR_NAME, code: TOOL_BLOCKED_AFTER_EXECUTE },
+        },
         ...decisionContexts.length > 0 ? { additionalContexts: decisionContexts } : {},
       })
     }

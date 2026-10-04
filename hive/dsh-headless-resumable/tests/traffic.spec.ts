@@ -157,14 +157,14 @@ describe('tool traffic', () => {
   })
 })
 
-describe('a refusal carrying no code of its own', () => {
-  // Measured on a real run: three `write` calls were refused with "invalid
-  // escalation: justification is only valid together with sandbox_permissions"
-  // and the run reported 54 of 54 served.
+describe('a failure carrying no code of its own', () => {
+  // A tool body that threw a plain `Error` rather than a `HarnessError`: the
+  // agent loop persists an error field only for the latter, so this reaches the
+  // log as nothing but `isError` on the content the model reads.
   it('counts as a failure rather than a success in the tally', () => {
     const events = [
-      call('a', 'write', '{"file_path":"/app/db.py","content":"x"}'),
-      refusedResult('a', 'Error: invalid escalation: justification is only valid together with sandbox_permissions'),
+      call('a', 'read', '{"file_path":""}'),
+      refusedResult('a', 'Error: file_path must be a non-empty string'),
       call('b', 'read', '{"file_path":"/app/db.py"}'),
       result('b'),
     ]
@@ -177,10 +177,33 @@ describe('a refusal carrying no code of its own', () => {
     expect(traffic.failuresByCode).toEqual({ [UNCODED_REFUSAL]: 1 })
   })
 
+  it('is blamed on the tool rather than on the harness', () => {
+    const events = [
+      call('a', 'read', '{"file_path":""}'),
+      refusedResult('a', 'Error: file_path must be a non-empty string'),
+    ]
+
+    expect(firstFailedCall(events, 0)?.origin).toBe('tool')
+  })
+
+  it('is not reported as a call the harness never served', () => {
+    const events = [
+      call('a', 'read', '{"file_path":""}'),
+      refusedResult('a', 'Error: file_path must be a non-empty string'),
+    ]
+
+    expect(toolTraffic(events, 0).unservedCalls).toEqual([])
+  })
+})
+
+describe('a call a policy declined', () => {
+  // Measured on a real run: three `write` calls were refused with "invalid
+  // escalation: justification is only valid together with sandbox_permissions"
+  // and the run reported 54 of 54 served. The refusing paths now carry codes.
   it('is reported as a call the harness never served', () => {
     const events = [
       call('a', 'write', '{"file_path":"/app/db.py","content":"x"}'),
-      refusedResult('a', 'Error: invalid escalation'),
+      result('a', { name: 'ToolRefused', code: 'DENIED_BY_POLICY', message: 'write denied by sandbox policy' }),
     ]
 
     expect(toolTraffic(events, 0).unservedCalls).toEqual([
@@ -190,15 +213,23 @@ describe('a refusal carrying no code of its own', () => {
 
   it('stops the run, naming the harness and quoting what it said', () => {
     const events = [
-      call('a', 'write', '{"file_path":"/app/db.py"}'),
-      refusedResult('a', 'Error: invalid escalation: justification is only valid together with sandbox_permissions'),
+      call('a', 'write', '{"file_path":"/app/db.py","content":"x"}'),
+      result('a', { name: 'ToolRefused', code: 'INVALID_ARGS', message: 'invalid escalation: sandbox_permissions requires a justification' }),
     ]
 
     const failure = firstFailedCall(events, 0)
 
     expect(failure?.origin).toBe('harness')
-    expect(failure?.code).toBe(UNCODED_REFUSAL)
     expect(failure?.message).toContain('invalid escalation')
+  })
+
+  it('blames the harness when a policy rejected a result the body produced', () => {
+    const events = [
+      call('a', 'write', '{"file_path":"/app/db.py","content":"x"}'),
+      result('a', { name: 'ToolRefused', code: 'BLOCKED_AFTER_EXECUTE', message: 'blocked by post-execute policy' }),
+    ]
+
+    expect(firstFailedCall(events, 0)?.origin).toBe('harness')
   })
 })
 
