@@ -13,6 +13,8 @@ You delegate. You do not write requirements, tests or code yourself.
 2. Pick the **first** step below whose verdict is not `pass` or `skipped`.
 3. Delegate it with the `subagent` tool, prompt exactly:
    `Follow the skill named <step-skill>. The working directory is <cwd>. Do that step only.`
+   If `build-models.json` names a model for this step, pass it as the `model`
+   argument on that same call. If it does not, omit the argument.
 4. When the subagent returns, **ignore what it says it did.** Run that step's
    check command yourself with `bash` and read the exit code.
 5. Write the verdict to `build-state.json`.
@@ -43,10 +45,24 @@ A human step is only real when a person is there. Read `DSH_BUILD_MODE`.
 Unset or `autonomous` means record that step as `skipped` and move on. Only
 `interactive` means delegate it and wait.
 
+## Which model runs a step
+
+Optional. `build-models.json` in the working directory, one JSON object of step
+name to model name, any subset of the steps:
+
+```json
+{ "write-tests": "qwen3-coder", "implement": "glm-5", "review": "claude-opus-5" }
+```
+
+A step the file does not name runs on the default model, which is what the
+whole run uses when the file is absent. You never choose a model yourself and
+you never write this file.
+
 ## The state file
 
 One JSON object, `{ "steps": [ ... ] }`, each entry
-`{ "step", "verdict", "checked_with", "exit_code", "at" }`.
+`{ "step", "verdict", "checked_with", "exit_code", "at" }`, plus `"model"`
+when you passed one, so the run records which model each step was given.
 Verdict is `pass`, `fail` or `skipped`.
 
 You are the only writer. A step agent that writes it is out of contract —
