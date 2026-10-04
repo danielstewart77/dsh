@@ -11,7 +11,7 @@
  * @module @hive/dsh-headless-resumable/traffic
  */
 
-import type { SessionEvent } from '@deepseek-ai/dsh-session'
+import type { SessionEvent, ToolResultMessage } from '@deepseek-ai/dsh-session'
 
 /** What one turn did with its tools. */
 export interface ToolTraffic {
@@ -90,8 +90,11 @@ function resultCallId(message: unknown, outstanding: ReadonlySet<string>): strin
   return oldest.done === true ? '' : oldest.value
 }
 
+/** The code a refusal carrying no class or code of its own is tallied under. */
+export const UNCODED_REFUSAL = 'REFUSED_UNCODED'
+
 /** Failure codes that mean the call never reached a tool body. */
-const UNSERVED_CODES: ReadonlySet<string> = new Set(['UNKNOWN_TOOL', 'INVALID_ARGS'])
+const UNSERVED_CODES: ReadonlySet<string> = new Set(['UNKNOWN_TOOL', 'INVALID_ARGS', UNCODED_REFUSAL])
 
 /**
  * The argument names of a logged call, whose arguments are a JSON string.
@@ -148,7 +151,7 @@ function failureMessage(error: object): string {
  * what says where to look — `harness` means widen a schema or add a tool,
  * `tool` means read what the tool actually said.
  */
-export const HARNESS_REFUSAL_CODES: readonly string[] = ['INVALID_ARGS', 'UNKNOWN_TOOL']
+export const HARNESS_REFUSAL_CODES: readonly string[] = ['INVALID_ARGS', 'UNKNOWN_TOOL', UNCODED_REFUSAL]
 
 /** Where a failure came from: the harness turning a call away, or a tool that ran and failed. */
 export type FailureOrigin = 'harness' | 'tool'
@@ -156,6 +159,45 @@ export type FailureOrigin = 'harness' | 'tool'
 /** Which side a failure came from, by the code the result carried. */
 export function failureOrigin(code: string): FailureOrigin {
   return HARNESS_REFUSAL_CODES.includes(code) ? 'harness' : 'tool'
+}
+
+/**
+ * The failure a result carries, by either of the two ways one is recorded.
+ *
+ * A tool that threw a `HarnessError` lands a structured `{ name, code, message }`
+ * on the event. A tool refused before it ran — an escalation the runtime would
+ * not grant, a policy that declined the call — lands nothing there and reports
+ * itself only as `isError` on the result content the model reads. Measured on a
+ * real run: three `write` calls were refused with "invalid escalation:
+ * justification is only valid together with sandbox_permissions", and a tally
+ * keyed on the structured field alone called that run 54 of 54 clean. A refusal
+ * read as a success is worse than no tally at all, because it is the one number
+ * the exam exists to produce.
+ * @param data - the `tool/result` event's data.
+ * @returns the failure, or nothing when the call really was served.
+ */
+function resultFailure(
+  data: { error?: { name: string; code: string; message?: string }; message: ToolResultMessage },
+): { name: string; code: string; message: string } | undefined {
+  const structured = data.error
+  if (structured !== undefined) {
+    return { name: structured.name, code: structured.code, message: failureMessage(structured) }
+  }
+  const content = data.message.content as readonly { isError?: boolean }[] | undefined
+  if (content?.some(block => block.isError === true) !== true) return undefined
+  // No class and no code were recorded, so the tally names it for what is known:
+  // the harness turned the call away without a tool raising.
+  return { name: 'ToolRefused', code: UNCODED_REFUSAL, message: refusalText(data.message) }
+}
+
+/** The text a refused result put in front of the model, which is the only account of it. */
+function refusalText(message: ToolResultMessage): string {
+  const content = message.content as readonly { text?: unknown }[] | undefined
+  const said = (content ?? [])
+    .map(block => typeof block.text === 'string' ? block.text : '')
+    .filter(text => text.length > 0)
+    .join(' ')
+  return said.slice(0, MAX_FAILURE_MESSAGE)
 }
 
 /**
@@ -194,19 +236,16 @@ export function firstFailedCall(
     if (event.type !== 'tool/result') continue
     const callId = resultCallId(event.data.message, outstanding)
     outstanding.delete(callId)
-    const error = event.data.error
-    if (error === undefined) continue
+    const failure = resultFailure(event.data)
+    if (failure === undefined) continue
     const call = calls.get(callId)
     return {
       name: call?.name ?? 'unnamed',
       parameters: call?.parameters ?? [],
-      code: error.code,
-      errorName: error.name,
-      origin: failureOrigin(error.code),
-      // The session's error shape declares a name and a code; a message rides on
-      // it in practice and is the most useful part, so it is read defensively
-      // rather than demanded.
-      message: failureMessage(error),
+      code: failure.code,
+      errorName: failure.name,
+      origin: failureOrigin(failure.code),
+      message: failure.message,
     }
   }
   return undefined
@@ -274,16 +313,16 @@ export function toolTraffic(events: readonly SessionEvent[], firstSeq: number): 
     if (answered.has(callId)) continue
     answered.add(callId)
     traffic.answered += 1
-    const error = event.data.error
-    if (error === undefined) {
+    const failure = resultFailure(event.data)
+    if (failure === undefined) {
       traffic.succeeded += 1
     } else {
       traffic.failed += 1
-      bump(traffic.failuresByCode, error.code)
+      bump(traffic.failuresByCode, failure.code)
     }
     outstanding.delete(callId)
     const call = calls.get(callId)
-    if (error === undefined || !UNSERVED_CODES.has(error.code) || call === undefined) continue
+    if (failure === undefined || !UNSERVED_CODES.has(failure.code) || call === undefined) continue
     const key = `${call.name}\u0000${call.parameters.join('\u0000')}`
     const seen = unserved.get(key)
     if (seen === undefined) {
