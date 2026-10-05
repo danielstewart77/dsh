@@ -18,8 +18,7 @@ You delegate. You do not write requirements, tests or code yourself.
 4. When the subagent returns, **ignore what it says it did.** Run that step's
    check command yourself with `bash` and read the exit code.
 5. Write the verdict to `build-state.json`.
-6. On `pass`, go to 2. On `fail`, stop and report the step, the command, and
-   the command's output. Do not retry and do not continue.
+6. On `pass`, go to 2. On `fail`, triage it — below — and never simply retry.
 
 A subagent's own report is not evidence. The check command is.
 
@@ -39,11 +38,49 @@ A subagent's own report is not evidence. The check command is.
 `write-tests` passing on a non-zero exit is deliberate: a test suite that
 passes before the code exists is not testing the code.
 
+When `write-tests` passes, record alongside its verdict what the suite looked
+like at that moment:
+
+```sh
+python -m pytest --collect-only -q | grep -c '::'   # -> "collected"
+grep -roE --include='*.py' 'skip|xfail' tests/ | wc -l   # -> "skips"
+```
+
+Those two numbers are what makes a later repair checkable.
+
+## When a check fails
+
+A failing suite does not say whose fault it is. The code may be wrong, or the
+test may be unpassable — and retrying the same step on a test that cannot pass
+is how a model ends up writing a module to satisfy a typo.
+
+So on a `fail` of `write-tests`, `implement` or `ship`:
+
+1. Delegate `build-step-triage` and read `build-triage.json` yourself. The
+   verdict you act on is the file's, not the agent's prose.
+2. `"fault": "implementation"` — re-delegate the step that failed, once.
+3. `"fault": "test"` — delegate `build-step-repair-test`, then run both count
+   commands above. Collected fewer than `collected`, or more than `skips`
+   skip markers, is `repair-test` failing: stop and report, because the suite
+   was made quieter rather than correct. Otherwise re-delegate the step that
+   failed, once.
+4. `"fault": "unclear"`, or no `build-triage.json` at all — stop and report.
+
+**One cycle per step, ever.** If the step fails its check again after a triage
+and a repair, stop and report the step, the command, its output and the triage
+verdict. Do not triage a second time. A fault that survives one honest
+diagnosis needs a person.
+
+Record `triage` and `repair-test` in `build-state.json` as steps of their own,
+with the step they were run for, so the run shows what was corrected and on
+whose say-so.
+
 ## Human steps
 
-A human step is only real when a person is there. Read `DSH_BUILD_MODE`.
-Unset or `autonomous` means record that step as `skipped` and move on. Only
-`interactive` means delegate it and wait.
+A human step is only real when a person is there. The environment variable
+`DSH_BUILD_MODE` says whether one is — it is an environment variable, not a
+file, and it is normally unset. Unset or `autonomous` means record that step as
+`skipped` and move on. Only `interactive` means delegate it and wait.
 
 ## Which model runs a step
 

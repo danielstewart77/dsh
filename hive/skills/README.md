@@ -10,6 +10,15 @@ step's check command itself and records the exit code, because a model saying
 "the tests pass" and a model whose tests pass are different claims and only one
 of them is checkable.
 
+A failed check is routed, not retried. `build-step-triage` reads the first
+failure and names the fault as the implementation's or the test's, writing that
+verdict to `build-triage.json` and editing nothing; the orchestrator sends the
+step back to be implemented again, or sends `build-step-repair-test` at the one
+test triage named. A repair is counted before and after — fewer tests collected
+or one more skip marker fails the step — because the cheapest way to turn a red
+suite green is to delete what is asking the question. One cycle per step, then
+a person.
+
 The step agents never decide whether to run. The orchestrator reads the state
 file before it delegates anything, so a resumed run starts at the first step
 that has not passed and a respawn cannot redo finished work.
