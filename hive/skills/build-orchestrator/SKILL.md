@@ -82,7 +82,10 @@ So on a `fail` of `write-tests`, `implement` or `ship`:
    skip markers, is `repair-test` failing: stop and report, because the suite
    was made quieter rather than correct. Otherwise re-delegate the step that
    failed, once.
-4. `"fault": "unclear"`, or no `build-triage.json` at all — stop and report.
+4. `"fault": "check"` — stop and report, naming the check command and its
+   output. The build is not the thing that failed, and no step agent can fix a
+   check command.
+5. `"fault": "unclear"`, or no `build-triage.json` at all — stop and report.
 
 **One cycle per step, ever.** If the step fails its check again after a triage
 and a repair, stop and report the step, the command, its output and the triage

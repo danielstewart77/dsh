@@ -8,7 +8,18 @@ description: Decide whether a failing test is failing because the code is wrong 
 A step failed its check command. Your whole job is to say where the defect is.
 You edit no file. You write one file, and it is not code.
 
-Run `python -m pytest -q` and take the **first** failure. For that one failure:
+First find out whether a test failed at all. A step's check command is more
+than its suite — `ship` also imports the package — so run `python -m pytest -q`
+and read it:
+
+- **No test failed.** Then the step failed on the rest of its check command, and
+  nothing you can say about a test is relevant. Write `"fault": "check"`, put
+  the command's own output in `defect`, and stop. That is a defect in the check
+  or in what it assumes about this run, and it is not a thing to repair by
+  editing the build.
+- **A test failed.** Take the **first** one and go on.
+
+For that one failure:
 
 1. Read the test. Note the module it imports, the name it calls, and what it
    asserts.
@@ -39,7 +50,8 @@ Write `build-triage.json` in the working directory, one object:
 }
 ```
 
-`defect` names what is wrong and where you looked. `fix` is one sentence, means
+`fault` is one of `implementation`, `test`, `check` or `unclear`, and nothing
+else. `defect` names what is wrong and where you looked. `fix` is one sentence, means
 anything only when `fault` is `test`, and says what to correct — never what to
 assert instead. On `unclear`, put in `defect` what you could not resolve.
 
