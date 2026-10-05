@@ -22,6 +22,12 @@ Either way, `stories/<n>/IMPLEMENTATION.md` is the contract and
 say, including its tests, and nothing they do not ask for — another story owns
 that, and two agents editing one behaviour is how a wave corrupts itself.
 
+The code does not live in `stories/<n>/`. That folder holds this story's
+plan and its review and nothing else; the application itself — packages,
+modules, `tests/`, the project declaration — is built at the run directory
+root, alongside `STORIES.md`, because every story contributes to one
+application rather than to a folder of its own.
+
 Do not edit any other story's folder, `STORIES.md`, or `build-state.json`.
 
 Hand back when you believe the story's deliverables are met. Saying so does not
