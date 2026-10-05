@@ -1,33 +1,31 @@
 # The build skills
 
-One orchestrator and one skill per step, for running a build on a model that
+One orchestrator and one skill per step, for building an app on a model that
 cannot be trusted to report on itself.
 
-`build-orchestrator` owns the step order, the pass/fail decision and
-`build-state.json`. Every other skill here does exactly one step and reports to
-it. The orchestrator does not read those reports as evidence: it runs each
-step's check command itself and records the exit code, because a model saying
-"the tests pass" and a model whose tests pass are different claims and only one
-of them is checkable.
+The unit of work is a **story**, not a phase. `build-step-decompose` splits an
+app description into small, composable, non-overlapping stories in their
+correct hierarchy — each naming the stories that gate it and the deliverables
+it owes — and `build-step-plan` writes each story's implementation plan against
+the real repository.
 
-A failed check is routed, not retried. `build-step-triage` reads the first
-failure and names the fault as the implementation's or the test's, writing that
-verdict to `build-triage.json` and editing nothing; the orchestrator sends the
-step back to be implemented again, or sends `build-step-repair-test` at the one
-test triage named. A repair is counted before and after — fewer tests collected
-or one more skip marker fails the step — because the cheapest way to turn a red
-suite green is to delete what is asking the question. One cycle per step, then
-a person.
+`build-orchestrator` owns the graph and the verdicts. It dispatches every story
+whose prerequisites are complete at once rather than walking a list, hands each
+agent nothing but a story number, and reviews every handback.
 
-The step agents never decide whether to run. The orchestrator reads the state
-file before it delegates anything, so a resumed run starts at the first step
-that has not passed and a respawn cannot redo finished work.
+The artifacts are the interface. An agent opens `stories/<n>/` and the folder
+tells it what to do: a `CODE-REVIEW.md` means the code exists and something is
+wrong with it, and no `CODE-REVIEW.md` means implement from
+`IMPLEMENTATION.md`. That is also why the reviewer must clear a passed review
+out of the folder — its presence is an instruction, not a record.
 
-Human steps — the two read-backs and the review — are real steps, not
-decoration. A harness exists to be used with a person. They are delegated only
-when `DSH_BUILD_MODE` is `interactive`; anything else records them as `skipped`,
-which is how one of these runs goes unattended without pretending a sign-off
-happened.
+`build-step-code-review` runs on every handback, holds the work to that story's
+own deliverables, and reads the code rather than trusting the suite: a function
+returning a literal the requirement says to compute passes a test asserting the
+shape of its payload, and that is exactly how a run ships nothing. When it
+fails it prescribes the fix, which is the feedback that gets a small model from
+most of the way there to actually done. Three rounds, then that story stops and
+the rest of the graph carries on.
 
 ## Installing them on a mind
 

@@ -1,127 +1,71 @@
 ---
 name: build-orchestrator
-description: Build an app from a task by delegating one small step at a time. Use when asked to build, implement, or finish a software project. Owns the step order, the pass/fail decision and the state file; does none of the work itself.
+description: Build an app from a description by decomposing it into stories and running them against their dependency graph. Use when asked to build, implement, or finish a software project. Owns the graph, the dispatch and the verdicts; does none of the work itself.
 ---
 
-# Build an app, one step at a time
+# Build an app, one story at a time, as many at once as the graph allows
 
-You delegate. You do not write requirements, tests or code yourself.
+You delegate. You write no code, you write no plan, and you judge nothing.
+The two files you write yourself are `build-state.json` and nothing else.
 
-## Every turn
+Parameters: the run directory (default: the working directory). Every path
+below is relative to it.
 
-1. Read `build-state.json` in the working directory. Absent means no step has run.
-2. Pick the **first** step below whose verdict is not `pass` or `skipped`.
-3. Delegate it with the `subagent` tool, prompt exactly:
-   `Follow the skill named <step-skill>. The working directory is <cwd>. Do that step only.`
-   If `build-models.json` names a model for this step, pass it as the `model`
-   argument on that same call. If it does not, omit the argument.
-4. When the subagent returns, **ignore what it says it did.** Run that step's
-   check command yourself with `bash` and read the exit code.
-5. Write the verdict to `build-state.json`.
-6. On `pass`, go to 2. On `fail`, triage it — below — and never simply retry.
+## The models
 
-A subagent's own report is not evidence. The check command is.
+`build-models.json` maps a step name to a model. Pass that model as the `model`
+argument of the `subagent` call for that step. A step the file does not name
+runs on the default. You never choose a model and you never write that file.
 
-## The steps
+## Your steps
 
-| step | skill | check command | passes when |
-|---|---|---|---|
-| requirements | `build-step-requirements` | `grep -c '^[0-9]' REQUIREMENTS.md` | at least 1 |
-| requirements-readback | `build-step-readback-requirements` | human | see below |
-| test-list | `build-step-test-list` | `grep -c '^[0-9]' TESTS.md` | at least as many as REQUIREMENTS.md |
-| test-list-readback | `build-step-readback-tests` | human | see below |
-| write-tests | `build-step-write-tests` | `python -m pytest -q` | exits **non-zero**, and collects at least one test |
-| implement | `build-step-implement` | `python -m pytest -q` | exits zero |
-| review | `build-step-review` | human | see below |
-| ship | `build-step-ship` | `python -m pytest -q && python -c "$IMPORTS"` | exits zero |
+**0. Read state.** `build-state.json`, and `STORIES.md` if it exists. Absent
+state means nothing has run. This is the only thing you read to decide
+anything — not your memory of the turn, not an agent's report.
 
-`write-tests` passing on a non-zero exit is deliberate: a test suite that
-passes before the code exists is not testing the code.
+**1. Decompose**, if `STORIES.md` does not exist. Delegate
+`build-step-decompose`. It writes `STORIES.md`: every story, its prerequisites,
+its deliverables.
 
-`$IMPORTS` in the `ship` check stands for this, which imports every package the
-run actually built rather than a module name guessed in advance:
+**2. Plan every story**, if any story has no `stories/<n>/IMPLEMENTATION.md`.
+Delegate `build-step-plan`.
 
-```py
-import importlib, pathlib, sys
-pkgs = [p.name for p in pathlib.Path('.').iterdir()
-        if (p / '__init__.py').exists() and p.name != 'tests']
-if not pkgs:
-    sys.exit('ship: no importable package in the run directory')
-for name in pkgs:
-    importlib.import_module(name)
-```
+**3. Select the wave.** Every story that is not complete and whose
+prerequisites are *all* complete. That set is the wave. It is not one story and
+it is not the file order — if six stories have no prerequisites, six stories go
+out. A wave that comes up empty while stories remain outstanding means the
+graph is blocked or a story has stopped: say which stories remain, which are
+blocking them, and stop.
 
-A suite can pass while a module is unimportable outside pytest's own path
-handling, which is the whole reason `ship` imports anything. What it must not
-do is demand a name the brief never specified — a failure there is the check
-being wrong, not the build.
+**4. Dispatch the wave.** One `subagent` call per story in the wave, all of
+them, concurrently. The prompt is exactly:
 
-When `write-tests` passes, record alongside its verdict what the suite looked
-like at that moment:
+`Follow the skill named build-agent-story. The working directory is <cwd>. Work story <n>.`
 
-```sh
-python -m pytest --collect-only -q | grep -c '::'   # -> "collected"
-grep -roE --include='*.py' 'skip|xfail' tests/ | wc -l   # -> "skips"
-```
+Nothing else goes in the prompt — not the plan, not the review, not the app
+description. The folder carries all of it, which is what makes the dispatch the
+same whether the story is new or coming back from a review.
 
-Those two numbers are what makes a later repair checkable.
+**5. Code review.** When a story hands back, delegate `build-step-code-review`
+for that story. Every handback, without exception — it is a step on the line,
+not a branch off it. The agent's own report of its work is not evidence.
 
-## When a check fails
+**6. Record the verdict.** After the review returns, look at the story folder
+yourself: `stories/<n>/CODE-REVIEW.md` present means the review did not pass;
+absent means it did. That file is the verdict, not what either agent said about
+it. Write the result into `build-state.json` with the story number, the round,
+and the model each delegation ran on.
 
-A failing suite does not say whose fault it is. The code may be wrong, or the
-test may be unpassable — and retrying the same step on a test that cannot pass
-is how a model ends up writing a module to satisfy a typo.
+A story that did not pass goes back out — step 4, same story, same skill, and
+the review in its folder is what the agent will read. **Three rounds.** A story
+that has failed review three times stops: record it, leave its review in place,
+and carry on with the rest of the graph. Its dependents stay blocked; nothing
+else does.
 
-So on a `fail` of `write-tests`, `implement` or `ship`:
+When every story is complete, say so and stop.
 
-1. Delegate `build-step-triage` and read `build-triage.json` yourself. The
-   verdict you act on is the file's, not the agent's prose.
-2. `"fault": "implementation"` — re-delegate the step that failed, once.
-3. `"fault": "test"` — delegate `build-step-repair-test`, then run both count
-   commands above. Collected fewer than `collected`, or more than `skips`
-   skip markers, is `repair-test` failing: stop and report, because the suite
-   was made quieter rather than correct. Otherwise re-delegate the step that
-   failed, once.
-4. `"fault": "check"` — stop and report, naming the check command and its
-   output. The build is not the thing that failed, and no step agent can fix a
-   check command.
-5. `"fault": "unclear"`, or no `build-triage.json` at all — stop and report.
+## The shape of the state file
 
-**One cycle per step, ever.** If the step fails its check again after a triage
-and a repair, stop and report the step, the command, its output and the triage
-verdict. Do not triage a second time. A fault that survives one honest
-diagnosis needs a person.
-
-Record `triage` and `repair-test` in `build-state.json` as steps of their own,
-with the step they were run for, so the run shows what was corrected and on
-whose say-so.
-
-## Human steps
-
-A human step is only real when a person is there. The environment variable
-`DSH_BUILD_MODE` says whether one is — it is an environment variable, not a
-file, and it is normally unset. Unset or `autonomous` means record that step as
-`skipped` and move on. Only `interactive` means delegate it and wait.
-
-## Which model runs a step
-
-Optional. `build-models.json` in the working directory, one JSON object of step
-name to model name, any subset of the steps:
-
-```json
-{ "write-tests": "qwen3-coder", "implement": "glm-5", "review": "claude-opus-5" }
-```
-
-A step the file does not name runs on the default model, which is what the
-whole run uses when the file is absent. You never choose a model yourself and
-you never write this file.
-
-## The state file
-
-One JSON object, `{ "steps": [ ... ] }`, each entry
-`{ "step", "verdict", "checked_with", "exit_code", "at" }`, plus `"model"`
-when you passed one, so the run records which model each step was given.
-Verdict is `pass`, `fail` or `skipped`.
-
-You are the only writer. A step agent that writes it is out of contract —
-overwrite what it wrote with your own measured verdict.
+One JSON object, `{ "stories": [ ... ] }`, each entry `{ "story", "verdict",
+"round", "model", "at" }`, verdict `complete`, `in-review`, `rework` or
+`stopped`. You are the only writer. An agent that writes it is out of contract.
