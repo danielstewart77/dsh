@@ -15,7 +15,11 @@ already written. A plan written without opening the repo is a guess.
 Write `stories/<n>/IMPLEMENTATION.md`:
 
 - what to build, in the order it has to be built
-- the real paths it goes in, named exactly
+- the real paths it goes in, named exactly, and written relative to the run
+  directory root — never to `stories/<n>/`, which holds this plan and its
+  review and no code. Every story builds into the one application tree at
+  that root, so a path the implementing agent can read as either is a path
+  two stories will resolve differently
 - what proves it done, tied to that story's declared deliverables
 - anything in the brief that is ambiguous or contradictory for this story, said
   out loud rather than decided silently
