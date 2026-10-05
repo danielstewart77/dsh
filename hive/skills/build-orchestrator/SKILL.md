@@ -37,6 +37,19 @@ out. A wave that comes up empty while stories remain outstanding means the
 graph is blocked or a story has stopped: say which stories remain, which are
 blocking them, and stop.
 
+Then cut the wave down by **write ownership**, which the graph does not
+capture. Two stories with no prerequisite relationship can still write the
+same thing, and concurrency is only safe over a resource exactly one agent
+writes. Usually that resource is a file — `STORIES.md` declares the files each
+story writes — but the rule is the same for a database, a port, a branch, a
+lockfile, or `build-state.json`, which is why that one has a named single
+writer. So take the wave in story order and admit a story only if nothing
+already admitted writes what it writes; a story held back that way is not
+blocked and is not a failure, it goes out in the next wave. Say which stories
+you held back and what they collided on. If a story's writes are not declared,
+read its `IMPLEMENTATION.md` for the files it names and treat that as the
+declaration.
+
 **4. Dispatch the wave.** One `subagent` call per story in the wave, all of
 them, concurrently. The prompt is exactly:
 
