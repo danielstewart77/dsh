@@ -33,10 +33,28 @@ A subagent's own report is not evidence. The check command is.
 | write-tests | `build-step-write-tests` | `python -m pytest -q` | exits **non-zero**, and collects at least one test |
 | implement | `build-step-implement` | `python -m pytest -q` | exits zero |
 | review | `build-step-review` | human | see below |
-| ship | `build-step-ship` | `python -m pytest -q && python -c "import app"` | exits zero |
+| ship | `build-step-ship` | `python -m pytest -q && python -c "$IMPORTS"` | exits zero |
 
 `write-tests` passing on a non-zero exit is deliberate: a test suite that
 passes before the code exists is not testing the code.
+
+`$IMPORTS` in the `ship` check stands for this, which imports every package the
+run actually built rather than a module name guessed in advance:
+
+```py
+import importlib, pathlib, sys
+pkgs = [p.name for p in pathlib.Path('.').iterdir()
+        if (p / '__init__.py').exists() and p.name != 'tests']
+if not pkgs:
+    sys.exit('ship: no importable package in the run directory')
+for name in pkgs:
+    importlib.import_module(name)
+```
+
+A suite can pass while a module is unimportable outside pytest's own path
+handling, which is the whole reason `ship` imports anything. What it must not
+do is demand a name the brief never specified — a failure there is the check
+being wrong, not the build.
 
 When `write-tests` passes, record alongside its verdict what the suite looked
 like at that moment:
