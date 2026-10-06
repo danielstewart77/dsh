@@ -22,11 +22,16 @@
  * @module @hive/dsh-headless-resumable/startup
  */
 
-import { readFileSync } from 'node:fs'
+import { readFileSync, unlinkSync } from 'node:fs'
 
 import { Command } from 'commander'
 import type { Context } from '@deepseek-ai/cordis'
 import { parseCmdline } from '@deepseek-ai/dsh-cmdline'
+
+/** Read a process-owned input file from disk. */
+function readInputFile(path: string): string {
+  return readFileSync(path, 'utf8')
+}
 
 /** Stable Cordis plugin name. */
 export const name = 'resumable-headless-startup'
@@ -43,11 +48,15 @@ export type SessionMode = 'create' | 'resume'
 /** What the runner row reads from {@link RESUMABLE_STARTUP_SERVICE}. */
 export interface ResumableStartupValues {
   /** The task text this invocation asked for. */
-  task: string
+  task?: string
   /** The conversation id, minted elsewhere and never by this process. */
   sessionId: string
   /** Create the session under that id, or continue the one already there. */
   mode: SessionMode
+  /** Keep one Agent alive and accept successive prompts from the terminal. */
+  interactive?: boolean
+  /** Context queued before the first typed prompt of a fresh conversation. */
+  initialContext?: string
   /**
    * How many goal rounds this dispatch is willing to pay for. Absent means one
    * physical turn — today's behaviour and the only thing a chat surface wants.
@@ -89,6 +98,8 @@ export function resumableCommand(): Command {
     .option('--session-id <id>', 'create the conversation under this id (its first process)')
     .option('--resume <id>', 'continue the conversation already persisted under this id')
     .option('--task-file <path>', 'read the task from this file instead of the positional')
+    .option('--interactive', 'keep the conversation open and read prompts from this terminal')
+    .option('--context-file <path>', 'queue this context before an interactive conversation\'s first prompt')
     .option('--goal-rounds <n>', 'drive the task as a goal for up to this many rounds (default: one turn)')
     .option('--stop-on-failed-call', 'end the run at the first failed tool call instead of driving the remaining rounds')
     .option('--goal-objective-file <path>', 'read the goal objective from this file (default: the task)')
@@ -140,8 +151,9 @@ export function resolveInvocation(
   options: {
     sessionId?: string; resume?: string; taskFile?: string
     goalRounds?: string; goalObjectiveFile?: string; stopOnFailedCall?: boolean
+    interactive?: boolean; contextFile?: string
   },
-  readTask: (path: string) => string = path => readFileSync(path, 'utf8'),
+  readTask: (path: string) => string = readInputFile,
 ): ResumableStartupValues {
   const positional = words.join(' ')
   const taskFile = options.taskFile?.trim() ?? ''
@@ -164,8 +176,12 @@ export function resolveInvocation(
   }
   const created = options.sessionId?.trim() ?? ''
   const resumed = options.resume?.trim() ?? ''
-  if (task.trim() === '') {
+  const interactive = options.interactive === true
+  if (!interactive && task.trim() === '') {
     throw new UsageError('a task is required, for example: dsh --profile hive --resume abc "fix the chart"')
+  }
+  if (interactive && task.trim() !== '') {
+    throw new UsageError('interactive mode reads prompts from the terminal; do not also name a task')
   }
   if (created !== '' && resumed !== '') {
     throw new UsageError('--session-id opens a conversation and --resume continues one; name only one')
@@ -174,6 +190,23 @@ export function resolveInvocation(
     throw new UsageError('a conversation id is required; this process does not mint one')
   }
   const goalRounds = resolveGoalRounds(options.goalRounds)
+  if (interactive && goalRounds !== undefined) {
+    throw new UsageError('--goal-rounds belongs to one-shot mode, not --interactive')
+  }
+  const contextFile = options.contextFile?.trim() ?? ''
+  let initialContext = ''
+  if (contextFile !== '') {
+    if (!interactive) throw new UsageError('--context-file requires --interactive')
+    try {
+      initialContext = readTask(contextFile)
+      if (readTask === readInputFile) unlinkSync(contextFile)
+    } catch (error: unknown) {
+      throw new UsageError(
+        `--context-file ${contextFile} could not be read: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      )
+    }
+  }
   const objectiveFile = options.goalObjectiveFile?.trim() ?? ''
   let goalObjective = ''
   if (objectiveFile !== '') {
@@ -190,9 +223,12 @@ export function resolveInvocation(
     }
   }
   const stopping = options.stopOnFailedCall === true ? { stopOnFailedCall: true } : {}
+  const terminal = interactive
+    ? { interactive: true as const, ...(initialContext === '' ? {} : { initialContext }) }
+    : { task }
   const identity = resumed !== ''
-    ? { task, sessionId: resumed, mode: 'resume' as const, ...stopping }
-    : { task, sessionId: created, mode: 'create' as const, ...stopping }
+    ? { ...terminal, sessionId: resumed, mode: 'resume' as const, ...stopping }
+    : { ...terminal, sessionId: created, mode: 'create' as const, ...stopping }
   if (goalRounds === undefined) return identity
   return goalObjective === ''
     ? { ...identity, goalRounds }

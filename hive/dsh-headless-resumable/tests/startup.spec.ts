@@ -31,6 +31,26 @@ describe('resolving an invocation', () => {
     expect(() => resolveInvocation(['   '], { resume: 'conv-1' })).toThrow(UsageError)
   })
 
+  it('opens an interactive conversation without inventing an opening turn', () => {
+    expect(resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextFile: '/tmp/context.txt',
+    }, path => (path === '/tmp/context.txt' ? 'standing context' : 'wrong file')))
+      .toEqual({
+        interactive: true,
+        initialContext: 'standing context',
+        sessionId: 'conv-1',
+        mode: 'create',
+      })
+  })
+
+  it('refuses a positional task and goal driving in interactive mode', () => {
+    expect(() => resolveInvocation(['task'], { resume: 'conv-1', interactive: true }))
+      .toThrow(UsageError)
+    expect(() => resolveInvocation([], {
+      resume: 'conv-1', interactive: true, goalRounds: '2',
+    })).toThrow(UsageError)
+  })
+
   it('takes the task from a file, for a turn too large for argv to carry', () => {
     const turn = 'x'.repeat(200_000)
     expect(resolveInvocation([], { resume: 'conv-1', taskFile: '/tmp/turn.txt' },
@@ -61,10 +81,14 @@ describe('the bundle patch that hands startup values to the runner', () => {
     const mapped = [...patch.matchAll(/ctx\.resumableHeadlessStartup\.(\w+)/g)].map(m => m[1])
     // Every option supplied, so every field the provider can carry is present:
     // a field that only materializes sometimes is exactly the one a patch drops.
-    const resolved = Object.keys(resolveInvocation([], {
+    const batch = Object.keys(resolveInvocation([], {
       sessionId: 'abc', taskFile: 'task', goalRounds: '40', goalObjectiveFile: 'objective',
       stopOnFailedCall: true,
     }, () => 'text'))
+    const interactive = Object.keys(resolveInvocation([], {
+      sessionId: 'abc', interactive: true, contextFile: 'context',
+    }, () => 'text'))
+    const resolved = [...new Set([...batch, ...interactive])]
 
     expect([...mapped].sort()).toEqual([...resolved].sort())
   })

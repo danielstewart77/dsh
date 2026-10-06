@@ -18,6 +18,10 @@
       "types": "./lib/types/traffic.d.ts",
       "default": "./lib/types/traffic.js"
     },
+    "./interactive": {
+      "types": "./lib/types/interactive.d.ts",
+      "default": "./lib/types/interactive.js"
+    },
     "./src/*": "./src/*",
     "./cordis.patch.yml": "./cordis.patch.yml",
     "./package.json": "./package.json"
