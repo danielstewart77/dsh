@@ -38,6 +38,7 @@ import { escalatorFromEnv, harnessRefusal } from './escalate.ts'
 import { firstFailedCall, NO_TRAFFIC, toolTraffic } from './traffic.ts'
 import type { FailedCall, ToolTraffic } from './traffic.ts'
 import type { SessionMode } from './startup.ts'
+import { runInteractive, terminalIo } from './interactive.ts'
 
 /** Stable Cordis plugin name. */
 export const name = 'resumable-headless-runner'
@@ -60,9 +61,11 @@ export const ROUND_POLL_MS = 25
 
 /** Plugin config, resolved from this app's startup provider. */
 export interface Config {
-  task: string
+  task?: string
   sessionId: string
   mode: SessionMode
+  interactive?: boolean
+  initialContext?: string
   /** Round cap when this dispatch wants the task driven as a goal. */
   goalRounds?: number
   /** The goal's objective, when the composed task is not what to repeat. */
@@ -82,9 +85,11 @@ export interface Config {
 }
 
 export const Config: z<Config> = z.object({
-  task: z.string().required(),
+  task: z.string(),
   sessionId: z.string().required(),
   mode: z.union(['create', 'resume'] as const).required(),
+  interactive: z.boolean(),
+  initialContext: z.string(),
   goalRounds: z.number(),
   goalObjective: z.string(),
   stopOnFailedCall: z.boolean(),
@@ -283,6 +288,7 @@ export function report(io: RunnerIo, turn: TurnReport): void {
 export async function run(
   ctx: Context, config: Config, io: RunnerIo, escalator?: { drain(): Promise<void> },
 ): Promise<void> {
+  if (config.task === undefined) throw new Error('one-shot mode requires a task')
   await ctx.get('loader')?.await()
   const agents = ctx.get('agents')
   const defaultModel = ctx.get('agentDefaultModel')
@@ -521,6 +527,17 @@ export function apply(ctx: Context, config: Config): void {
     )
   }
   const io: RunnerIo = { stdout: internals.stdout, stderr: internals.stderr, exit }
+  if (config.interactive === true) {
+    void runInteractive(ctx, {
+      sessionId: config.sessionId,
+      mode: config.mode,
+      ...(config.initialContext === undefined ? {} : { initialContext: config.initialContext }),
+    }, terminalIo(exit)).catch((error: unknown) => {
+      internals.stderr.write(`dsh-hive: ${error instanceof Error ? error.message : String(error)}\n`)
+      exit(1)
+    })
+    return
+  }
   // Subscribed before the turn is driven, so the opening round's refusals
   // escalate as readily as round thirty's. Every committed event passes here,
   // including a subagent's: a delegate refused the same tool for the same
