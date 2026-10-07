@@ -127,6 +127,15 @@ export interface TurnReport {
   error?: { code: string; message: string }
 }
 
+/**
+ * One piece of assistant output as it is produced: prose, or the model's own
+ * reasoning when the provider sends it as readable text.
+ */
+export interface StreamDelta {
+  kind: 'text' | 'reasoning'
+  text: string
+}
+
 /** Process-facing effects: output streams plus the launcher's bounded exit request. */
 interface RunnerIo {
   stdout: { write(chunk: string): unknown }
@@ -270,6 +279,48 @@ export function reportProgress(
   io.stdout.write(JSON.stringify({ progress }) + '\n')
 }
 
+/**
+ * One assistant delta as a line of stdout, or undefined for an event that
+ * carries nothing a reader would want to see.
+ *
+ * Prose and reasoning both stream, and both are labelled, because a surface has
+ * to be able to render them differently — a mind's reasoning is not its answer.
+ * Reasoning rides here only because dsh carries it as plain text; a provider
+ * that encrypts its thinking emits no text for this to find, and the surfaces
+ * decide what to do with that rather than this runner guessing per vendor.
+ *
+ * Tool-call deltas are deliberately not streamed. A tool call arrives one
+ * fragment of JSON at a time, which is unreadable as prose, and the chat
+ * surfaces do not show tool traffic at all. The interactive pane gets its own
+ * rendering of a call from `tool/call`, which is a whole call rather than a
+ * fragment of one.
+ * @param event - one published session event.
+ * @returns the delta to write, or undefined.
+ */
+export function streamDelta(event: SessionEvent): StreamDelta | undefined {
+  if (event.type !== 'assistant/chunk') return undefined
+  const chunk = event.data.chunk
+  if (chunk.type !== 'text-delta' && chunk.type !== 'reasoning-delta') return undefined
+  // An empty delta is a fragment boundary, not something to show. Writing it
+  // would cost the surface an edit of its message for no visible change.
+  if (chunk.text === '') return undefined
+  return { kind: chunk.type === 'text-delta' ? 'text' : 'reasoning', text: chunk.text }
+}
+
+/**
+ * One line of stdout per assistant delta, so a chat surface can render a turn
+ * as it is written rather than when it ends.
+ *
+ * It carries neither `sessionId` nor `progress`: those two fields are what
+ * identify the turn report and a round's progress line, and a delta mistaken
+ * for either would end the turn early or inflate the round count.
+ * @param io - process-facing effects.
+ * @param delta - the delta to write.
+ */
+export function reportDelta(io: Pick<RunnerIo, 'stdout'>, delta: StreamDelta): void {
+  io.stdout.write(JSON.stringify({ delta }) + '\n')
+}
+
 /** Write one report and request the matching exit. A completed turn is the only zero. */
 export function report(io: RunnerIo, turn: TurnReport): void {
   io.stdout.write(JSON.stringify(turn) + '\n')
@@ -385,6 +436,14 @@ export async function run(
     // task therefore opens the conversation rather than racing a goal round.
     armGoal(goals, agent as never, config.goalObjective ?? config.task, rounds)
   }
+  // Subscribed before the task is submitted, so the opening turn's first token
+  // is streamed rather than the second turn's. The subscription outlives every
+  // goal round: each round is another model turn on the same agent, and a
+  // per-round subscription would stream round one and go quiet for the rest.
+  const stopStreaming = agent.ctx.on('session/event', (_session, event) => {
+    const delta = streamDelta(event)
+    if (delta !== undefined) reportDelta(io, delta)
+  })
   // Armed before the task is sent, so a failure in the opening turn stops the run
   // as readily as one in round thirty.
   const watch = config.stopOnFailedCall === true
@@ -419,6 +478,9 @@ export async function run(
     }
   }
   watch?.stop()
+  // Stopped before the report is written: a delta arriving after it would be
+  // read as belonging to a turn the adapter has already closed.
+  stopStreaming()
   await sessions.flush(agent.session)
   // Awaited before the report, so a one-shot process does not exit with an
   // escalation half-written. Each send carries its own deadline, so a gateway

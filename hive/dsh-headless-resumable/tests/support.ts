@@ -44,6 +44,39 @@ export const ordinaryTurn: Script = (session, message, turn) => {
 }
 
 /**
+ * A turn whose answer arrives as the provider sends one: reasoning first, then
+ * prose, delta by delta, with the assembled message appended at the end.
+ */
+export const streamingTurn: Script = (session, message, turn) => {
+  session.append('turn/start', { turn })
+  session.append('step/start', { turn, step: 1 })
+  session.append('user/message', message, { surfaceOp: 'append' })
+  session.append('assistant/chunk', {
+    turn, step: 1, chunk: { type: 'reasoning-delta', index: 0, text: 'weighing it' },
+  })
+  session.append('assistant/chunk', {
+    turn, step: 1, chunk: { type: 'text-delta', index: 1, text: 'half ' },
+  })
+  session.append('assistant/chunk', {
+    turn, step: 1, chunk: { type: 'tool-call-delta', index: 2, callId: `call-${turn}` as never,
+      name: 'write_file', arguments: '{"pa' },
+  })
+  session.append('assistant/chunk', {
+    turn, step: 1, chunk: { type: 'text-delta', index: 1, text: 'an answer' },
+  })
+  session.append('assistant/message', {
+    turn,
+    step: 1,
+    message: createAssistantMessage({
+      content: [{ type: 'text', text: 'half an answer' }],
+      source: { provider: 'test-provider', model: 'test-model' },
+    }),
+  }, { surfaceOp: 'append' })
+  session.append('step/end', { turn, step: 1 })
+  session.append('turn/end', { turn, reason: { kind: 'completed' } })
+}
+
+/**
  * A tree holding the real session store and agent registry, with a scripted
  * factory that creates under the id it is given and resumes a session the store
  * already holds — which is what the two halves of the hive's invariant are.
@@ -143,7 +176,15 @@ export async function bench(script: Script = ordinaryTurn): Promise<{
       const written = out.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>)
       const progress = written.filter(line => line['progress'] !== undefined)
         .map(line => line['progress'] as { round: number; turns: number; toolCalls: number })
-      return { code, report: written[written.length - 1] as unknown as TurnReport, progress, err }
+      const deltas = written.filter(line => line['delta'] !== undefined)
+        .map(line => line['delta'] as { kind: string; text: string })
+      // The stdout lines in order, so a spec can prove a delta preceded the
+      // report rather than merely accompanying it.
+      const order = written.map(line => line['delta'] !== undefined
+        ? 'delta'
+        : line['progress'] !== undefined ? 'progress' : 'report')
+      return { code, report: written[written.length - 1] as unknown as TurnReport,
+        progress, deltas, order, err }
     },
   }
 }
