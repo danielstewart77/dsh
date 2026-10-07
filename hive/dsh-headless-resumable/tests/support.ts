@@ -8,12 +8,69 @@ import { Context } from '@deepseek-ai/cordis'
 import AgentRegistry, { Inbox } from '@deepseek-ai/dsh-agent'
 import type { Agent, AgentHandle, CreateAgentOptions, ResumeAgentOptions } from '@deepseek-ai/dsh-agent'
 import AgentDefaultModelConfig from '@deepseek-ai/dsh-agent-default-model'
-import { createAssistantMessage } from '@deepseek-ai/dsh-llm'
+import { createAssistantMessage, createUserMessage } from '@deepseek-ai/dsh-llm'
 import SessionStore from '@deepseek-ai/dsh-session'
 import type { Session, UserMessage } from '@deepseek-ai/dsh-session'
 
 import { apply, internals } from '../src/index.ts'
+import type { GoalDriving } from '../src/index.ts'
 import type { Config, TurnReport } from '../src/index.ts'
+
+/** A goal view shaped like the real service's, for the pure helpers. */
+export function view(over: Partial<{
+  id: string; revision: number; phase: string; objective: string
+  maxGoalRounds: number; roundsStarted: number; activation: string
+}> = {}) {
+  return {
+    id: 'goal-1',
+    revision: 1,
+    phase: 'active',
+    objective: 'build the app',
+    maxGoalRounds: 10,
+    roundsStarted: 0,
+    activation: 'armed',
+    ...over,
+  }
+}
+
+/**
+ * A stand-in for the real round driver: it opens one further round each time the
+ * runner reads goal state, and completes the goal once the given number of
+ * rounds has been driven.
+ */
+export function drivingGoals(objective: string, cap: number, completeAfterRounds: number): GoalDriving {
+  let goal = view({ objective, maxGoalRounds: cap })
+  return {
+    get: (live) => {
+      const agent = live as unknown as {
+        session: { events: readonly { type: string }[] }
+        followup(message: unknown): void
+      }
+      // One round per completed turn, opened only at a genuine idle — the real
+      // driver reserves on the `agent/status` idle edge, and a stub that
+      // advanced on every read would make the runner's own loop look wrong.
+      const started = agent.session.events.filter(e => e.type === 'turn/start').length
+      const ended = agent.session.events.filter(e => e.type === 'turn/end').length
+      if (started === ended && goal.phase === 'active' && goal.activation === 'armed'
+        && goal.roundsStarted < goal.maxGoalRounds && goal.roundsStarted < ended) {
+        goal = { ...goal, roundsStarted: goal.roundsStarted + 1 }
+        if (goal.roundsStarted >= completeAfterRounds) goal = { ...goal, phase: 'complete' }
+        agent.followup(createUserMessage({
+          content: [{ type: 'text', text: `<goal_round>${goal.roundsStarted}</goal_round>` }],
+          source: { kind: 'user' },
+        }))
+      }
+      return goal
+    },
+    create: () => goal as never,
+    resume: () => goal as never,
+    edit: (_a, ref) => ref,
+  }
+}
+
+
+/** Everything the run under way has written to stdout so far. */
+export const stdoutSoFar = { out: '' }
 
 /** What the scripted agent appends when a task arrives. */
 export type Script = (session: Session, message: UserMessage, turn: number) => void
@@ -162,7 +219,16 @@ export async function bench(script: Script = ordinaryTurn): Promise<{
     run: async (config: Config) => {
       let out = ''
       let err = ''
-      internals.stdout = { write: (chunk: string) => { out += chunk; return true } }
+      // Readable from inside a script, so a spec can ask what had already been
+      // written at the moment the model was still mid-turn. Collecting stdout
+      // and inspecting it afterwards cannot tell streaming from a buffered
+      // flush that happens to preserve order.
+      stdoutSoFar.out = ''
+      internals.stdout = { write: (chunk: string) => {
+        out += chunk
+        stdoutSoFar.out += chunk
+        return true
+      } }
       internals.stderr = { write: (chunk: string) => { err += chunk; return true } }
       const code = await new Promise<number>((resolve) => {
         exited = resolve

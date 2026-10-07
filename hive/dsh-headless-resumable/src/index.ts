@@ -440,7 +440,13 @@ export async function run(
   // is streamed rather than the second turn's. The subscription outlives every
   // goal round: each round is another model turn on the same agent, and a
   // per-round subscription would stream round one and go quiet for the rest.
-  const stopStreaming = agent.ctx.on('session/event', (_session, event) => {
+  const stopStreaming = agent.ctx.on('session/event', (session, event) => {
+    // This conversation's own events only. Scope containment admits a listener
+    // tagged with an ancestor to events dispatched to a descendant key, and an
+    // in-process subagent is created from this agent's context — so without
+    // this the delegate's prose streams to the surface in the mind's own voice,
+    // interleaved with the mind's and attributed to it.
+    if (session.id !== agent.session.id) return
     const delta = streamDelta(event)
     if (delta !== undefined) reportDelta(io, delta)
   })
@@ -449,38 +455,43 @@ export async function run(
   const watch = config.stopOnFailedCall === true
     ? watchForFailedCall(agent as never, firstSeq)
     : undefined
-  agent.followup(createUserMessage({
-    content: [{ type: 'text', text: config.task }],
-    source: { kind: 'user' },
-  }))
-  await (watch === undefined
-    ? agent.whenIdle()
-    : Promise.race([agent.whenIdle(), watch.settled]))
+  try {
+    agent.followup(createUserMessage({
+      content: [{ type: 'text', text: config.task }],
+      source: { kind: 'user' },
+    }))
+    await (watch === undefined
+      ? agent.whenIdle()
+      : Promise.race([agent.whenIdle(), watch.settled]))
 
-  // The goal rounds. Each one is a fresh model turn the harness opened, not the
-  // model's own decision to carry on — which is the whole point: a small model
-  // that stops early stops a round, not the job.
-  if (goals !== undefined && watch?.check() === undefined) {
-    for (;;) {
-      const goal = goals.get(agent as never)
-      if (!continuing(goal)) break
-      if (!await waitForRound(goals, agent as never, goal?.roundsStarted ?? 0)) break
-      await (watch === undefined
-        ? agent.whenIdle()
-        : Promise.race([agent.whenIdle(), watch.settled]))
-      if (watch?.check() !== undefined) break
-      const sofar = summarize(agent.session.events, firstSeq)
-      reportProgress(io, {
-        round: goals.get(agent as never)?.roundsStarted ?? 0,
-        turns: sofar.turns,
-        toolCalls: toolTraffic(agent.session.events, firstSeq).emitted,
-      })
+    // The goal rounds. Each one is a fresh model turn the harness opened, not the
+    // model's own decision to carry on — which is the whole point: a small model
+    // that stops early stops a round, not the job.
+    if (goals !== undefined && watch?.check() === undefined) {
+      for (;;) {
+        const goal = goals.get(agent as never)
+        if (!continuing(goal)) break
+        if (!await waitForRound(goals, agent as never, goal?.roundsStarted ?? 0)) break
+        await (watch === undefined
+          ? agent.whenIdle()
+          : Promise.race([agent.whenIdle(), watch.settled]))
+        if (watch?.check() !== undefined) break
+        const sofar = summarize(agent.session.events, firstSeq)
+        reportProgress(io, {
+          round: goals.get(agent as never)?.roundsStarted ?? 0,
+          turns: sofar.turns,
+          toolCalls: toolTraffic(agent.session.events, firstSeq).emitted,
+        })
+      }
     }
+  } finally {
+    watch?.stop()
+    // In a finally, and before the report is written. A rejection out of the
+    // turn or the round loop that left this listener live would go on writing
+    // deltas with no report behind them, and the adapter would print "exited
+    // without reporting a turn" underneath an answer the user watched arrive.
+    stopStreaming()
   }
-  watch?.stop()
-  // Stopped before the report is written: a delta arriving after it would be
-  // read as belonging to a turn the adapter has already closed.
-  stopStreaming()
   await sessions.flush(agent.session)
   // Awaited before the report, so a one-shot process does not exit with an
   // escalation half-written. Each send carries its own deadline, so a gateway
