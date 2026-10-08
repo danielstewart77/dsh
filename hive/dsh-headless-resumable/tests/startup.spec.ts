@@ -43,6 +43,29 @@ describe('resolving an invocation', () => {
       })
   })
 
+  it('carries a staged rotation as context the successor answers, not context it queues', () => {
+    // A rotation seed is the carry-forward with the user's own typed message
+    // concatenated on. Queued, the pane opens with their question sitting
+    // unanswered in the conversation and nothing on screen; the successor has
+    // to take it as a turn and reply to it.
+    expect(resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextFile: '/tmp/seed.txt',
+      contextAsTurn: true,
+    }, () => 'the summary\n\nand what I typed')).toEqual({
+      interactive: true,
+      initialContext: 'the summary\n\nand what I typed',
+      contextAsTurn: true,
+      sessionId: 'conv-1',
+      mode: 'create',
+    })
+  })
+
+  it('refuses to answer an opening context when there is none to answer', () => {
+    expect(() => resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextAsTurn: true,
+    })).toThrow(UsageError)
+  })
+
   it('refuses a positional task and goal driving in interactive mode', () => {
     expect(() => resolveInvocation(['task'], { resume: 'conv-1', interactive: true }))
       .toThrow(UsageError)
@@ -87,6 +110,7 @@ describe('the bundle patch that hands startup values to the runner', () => {
     }, () => 'text'))
     const interactive = Object.keys(resolveInvocation([], {
       sessionId: 'abc', interactive: true, contextFile: 'context',
+      contextAsTurn: true,
     }, () => 'text'))
     const resolved = [...new Set([...batch, ...interactive])]
 

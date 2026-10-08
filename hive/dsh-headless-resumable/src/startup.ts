@@ -57,6 +57,7 @@ export interface ResumableStartupValues {
   interactive?: boolean
   /** Context queued before the first typed prompt of a fresh conversation. */
   initialContext?: string
+  contextAsTurn?: boolean
   /**
    * How many goal rounds this dispatch is willing to pay for. Absent means one
    * physical turn — today's behaviour and the only thing a chat surface wants.
@@ -100,6 +101,7 @@ export function resumableCommand(): Command {
     .option('--task-file <path>', 'read the task from this file instead of the positional')
     .option('--interactive', 'keep the conversation open and read prompts from this terminal')
     .option('--context-file <path>', 'queue this context before an interactive conversation\'s first prompt')
+    .option('--context-as-turn', 'answer the --context-file context as the opening turn instead of queueing it')
     .option('--goal-rounds <n>', 'drive the task as a goal for up to this many rounds (default: one turn)')
     .option('--stop-on-failed-call', 'end the run at the first failed tool call instead of driving the remaining rounds')
     .option('--goal-objective-file <path>', 'read the goal objective from this file (default: the task)')
@@ -151,7 +153,7 @@ export function resolveInvocation(
   options: {
     sessionId?: string; resume?: string; taskFile?: string
     goalRounds?: string; goalObjectiveFile?: string; stopOnFailedCall?: boolean
-    interactive?: boolean; contextFile?: string
+    interactive?: boolean; contextFile?: string; contextAsTurn?: boolean
   },
   readTask: (path: string) => string = readInputFile,
 ): ResumableStartupValues {
@@ -207,6 +209,13 @@ export function resolveInvocation(
       )
     }
   }
+  // A seed that must be answered but is not there would open the pane on
+  // nothing while this process reported a successful rotation, so the flag is
+  // refused rather than ignored.
+  const contextAsTurn = options.contextAsTurn === true
+  if (contextAsTurn && initialContext.trim() === '') {
+    throw new UsageError('--context-as-turn needs a --context-file holding the turn to answer')
+  }
   const objectiveFile = options.goalObjectiveFile?.trim() ?? ''
   let goalObjective = ''
   if (objectiveFile !== '') {
@@ -224,7 +233,11 @@ export function resolveInvocation(
   }
   const stopping = options.stopOnFailedCall === true ? { stopOnFailedCall: true } : {}
   const terminal = interactive
-    ? { interactive: true as const, ...(initialContext === '' ? {} : { initialContext }) }
+    ? {
+      interactive: true as const,
+      ...(initialContext === '' ? {} : { initialContext }),
+      ...(contextAsTurn ? { contextAsTurn: true } : {}),
+    }
     : { task }
   const identity = resumed !== ''
     ? { ...terminal, sessionId: resumed, mode: 'resume' as const, ...stopping }

@@ -66,6 +66,7 @@ export interface Config {
   mode: SessionMode
   interactive?: boolean
   initialContext?: string
+  contextAsTurn?: boolean
   /** Round cap when this dispatch wants the task driven as a goal. */
   goalRounds?: number
   /** The goal's objective, when the composed task is not what to repeat. */
@@ -90,6 +91,7 @@ export const Config: z<Config> = z.object({
   mode: z.union(['create', 'resume'] as const).required(),
   interactive: z.boolean(),
   initialContext: z.string(),
+  contextAsTurn: z.boolean(),
   goalRounds: z.number(),
   goalObjective: z.string(),
   stopOnFailedCall: z.boolean(),
@@ -605,6 +607,7 @@ export function apply(ctx: Context, config: Config): void {
       sessionId: config.sessionId,
       mode: config.mode,
       ...(config.initialContext === undefined ? {} : { initialContext: config.initialContext }),
+      ...(config.contextAsTurn === undefined ? {} : { contextAsTurn: config.contextAsTurn }),
     }, terminalIo(exit)).catch((error: unknown) => {
       internals.stderr.write(`dsh-hive: ${error instanceof Error ? error.message : String(error)}\n`)
       exit(1)

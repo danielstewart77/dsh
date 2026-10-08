@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionEvent } from '@deepseek-ai/dsh-session'
 
-import { mindLabel, openingContextMessage, renderEvent } from '../src/interactive.ts'
+import { mindLabel, openingContextDelivery, openingContextMessage, renderEvent } from '../src/interactive.ts'
 
 function event(type: SessionEvent['type'], data: unknown): SessionEvent {
   return { type, data, seq: 1, time: 1 } as SessionEvent
@@ -73,5 +73,27 @@ describe('the mind the pane speaks for', () => {
   it('falls back to the harness name when no mind is named', () => {
     expect(mindLabel({})).toBe('dsh')
     expect(mindLabel({ MIND_NAME: '   ' })).toBe('dsh')
+  })
+})
+
+describe('how an opening context reaches the conversation', () => {
+  it('answers a staged rotation rather than queueing it', () => {
+    const delivery = openingContextDelivery('the summary\n\nand what I typed', true)
+    expect(delivery?.submit).toBe(true)
+    expect(delivery?.message.content).toEqual([
+      { type: 'text', text: 'the summary\n\nand what I typed' },
+    ])
+  })
+
+  it('queues a fresh terminal\'s standing context rather than answering it', () => {
+    // Standing context is not a question. Submitting it would make the pane
+    // open by replying to its own system prompt.
+    const delivery = openingContextDelivery('you are mid-build on story 4', false)
+    expect(delivery?.submit).toBe(false)
+  })
+
+  it('has nothing to deliver when there is no opening context', () => {
+    expect(openingContextDelivery(undefined, true)).toBeUndefined()
+    expect(openingContextDelivery('  \n\t ', true)).toBeUndefined()
   })
 })
