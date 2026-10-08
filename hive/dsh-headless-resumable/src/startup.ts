@@ -57,6 +57,7 @@ export interface ResumableStartupValues {
   interactive?: boolean
   /** Context queued before the first typed prompt of a fresh conversation. */
   initialContext?: string
+  contextAsTurn?: boolean
   /**
    * How many goal rounds this dispatch is willing to pay for. Absent means one
    * physical turn — today's behaviour and the only thing a chat surface wants.
@@ -100,6 +101,7 @@ export function resumableCommand(): Command {
     .option('--task-file <path>', 'read the task from this file instead of the positional')
     .option('--interactive', 'keep the conversation open and read prompts from this terminal')
     .option('--context-file <path>', 'queue this context before an interactive conversation\'s first prompt')
+    .option('--context-as-turn', 'answer the --context-file context as the opening turn instead of queueing it')
     .option('--goal-rounds <n>', 'drive the task as a goal for up to this many rounds (default: one turn)')
     .option('--stop-on-failed-call', 'end the run at the first failed tool call instead of driving the remaining rounds')
     .option('--goal-objective-file <path>', 'read the goal objective from this file (default: the task)')
@@ -151,7 +153,7 @@ export function resolveInvocation(
   options: {
     sessionId?: string; resume?: string; taskFile?: string
     goalRounds?: string; goalObjectiveFile?: string; stopOnFailedCall?: boolean
-    interactive?: boolean; contextFile?: string
+    interactive?: boolean; contextFile?: string; contextAsTurn?: boolean
   },
   readTask: (path: string) => string = readInputFile,
 ): ResumableStartupValues {
@@ -194,18 +196,27 @@ export function resolveInvocation(
     throw new UsageError('--goal-rounds belongs to one-shot mode, not --interactive')
   }
   const contextFile = options.contextFile?.trim() ?? ''
+  // The flag alone is a malformed invocation and is refused. A file that is
+  // named but unreadable, or that holds nothing, is a *runtime* condition and
+  // opens the conversation unseeded instead — by the time this process runs,
+  // the caller has already respawned the pane and recorded the rotation as
+  // done, so refusing is a dead pane. An unseeded conversation is recoverable:
+  // the gateway holds the same text on the session row and hands it back on
+  // the next attach. A dead pane is not.
+  const contextAsTurn = options.contextAsTurn === true
+  if (contextAsTurn && contextFile === '') {
+    throw new UsageError('--context-as-turn needs a --context-file holding the turn to answer')
+  }
   let initialContext = ''
   if (contextFile !== '') {
     if (!interactive) throw new UsageError('--context-file requires --interactive')
     try {
       initialContext = readTask(contextFile)
       if (readTask === readInputFile) unlinkSync(contextFile)
-    } catch (error: unknown) {
-      throw new UsageError(
-        `--context-file ${contextFile} could not be read: `
-        + `${error instanceof Error ? error.message : String(error)}`,
-      )
+    } catch {
+      initialContext = ''
     }
+    if (initialContext.trim() === '') initialContext = ''
   }
   const objectiveFile = options.goalObjectiveFile?.trim() ?? ''
   let goalObjective = ''
@@ -224,7 +235,11 @@ export function resolveInvocation(
   }
   const stopping = options.stopOnFailedCall === true ? { stopOnFailedCall: true } : {}
   const terminal = interactive
-    ? { interactive: true as const, ...(initialContext === '' ? {} : { initialContext }) }
+    ? {
+      interactive: true as const,
+      ...(initialContext === '' ? {} : { initialContext }),
+      ...(contextAsTurn && initialContext !== '' ? { contextAsTurn: true } : {}),
+    }
     : { task }
   const identity = resumed !== ''
     ? { ...terminal, sessionId: resumed, mode: 'resume' as const, ...stopping }

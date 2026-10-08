@@ -19,6 +19,13 @@ export interface InteractiveConfig {
   sessionId: string
   mode: SessionMode
   initialContext?: string
+  /**
+   * Answer the opening context instead of queueing it. A staged rotation's
+   * seed is the carry-forward with the user's own typed message concatenated
+   * on, so the successor owes them a reply; a fresh terminal's seed is
+   * standing context and submits nothing.
+   */
+  contextAsTurn?: boolean
 }
 
 /** Terminal operations separated from readline so the lifecycle is testable. */
@@ -77,6 +84,31 @@ export function openingContextMessage(initialContext: string | undefined): UserM
     content: [{ type: 'text', text: initialContext as string }],
     source: { kind: 'plugin', plugin: 'hive-terminal-context' },
   })
+}
+
+/** How an opening context reaches the conversation: queued, or answered. */
+export interface OpeningContextDelivery {
+  message: UserMessage
+  /** True when the conversation owes this context a reply. */
+  submit: boolean
+}
+
+/**
+ * The opening context and whether it is a turn the successor has to answer.
+ *
+ * Injecting adds a message and starts nothing, which is right for standing
+ * context and wrong for a rotation: the pane would open with the user's
+ * question sitting in the conversation and no answer coming.
+ * @param initialContext - the opening context, if any.
+ * @param asTurn - whether this context is owed a reply.
+ * @returns the message and its delivery, or undefined when there is nothing.
+ */
+export function openingContextDelivery(
+  initialContext: string | undefined, asTurn: boolean,
+): OpeningContextDelivery | undefined {
+  const message = openingContextMessage(initialContext)
+  if (message === undefined) return undefined
+  return { message, submit: asTurn }
 }
 
 /** Text from one completed interval when no stream delta was rendered. */
@@ -154,8 +186,10 @@ export async function runInteractive(
     })
   const { agent } = handle
   await agent.whenIdle()
-  const opening = openingContextMessage(config.initialContext)
-  if (opening !== undefined) agent.inject(opening)
+  const opening = openingContextDelivery(
+    config.initialContext, config.contextAsTurn === true,
+  )
+  if (opening !== undefined && !opening.submit) agent.inject(opening.message)
 
   const calls = new Map<string, string>()
   const state = { streamed: false }
@@ -173,9 +207,37 @@ export async function runInteractive(
   })
 
   io.write(`${mindLabel()} · DSH · ${selection.model}\nConversation ${config.sessionId}\nType /exit to close. Ctrl+C interrupts a running turn.\n\n`)
-  io.prompt()
+  // Taken before the opening turn, not at the `for await` below. The iterator
+  // attaches readline's line listener when it is created, and lines emitted
+  // before that are dropped — so a user typing during an opening turn, which
+  // is a whole model turn long and comes right after a rotation when they are
+  // most likely to be typing, would watch readline echo their follow-up and
+  // then see it vanish.
+  const lines = io.lines[Symbol.asyncIterator]()
   try {
-    for await (const line of io.lines) {
+    // A staged rotation opens owing the user an answer: its seed carries the
+    // message they typed into the conversation this one replaced. Answered
+    // here rather than queued, before the first prompt, so the reply is on
+    // screen when they look at the pane. Inside the try, so a throw from the
+    // turn or from the flush still tears the pane's listeners down rather
+    // than leaving a prompt-less pane alive on a dead event loop.
+    if (opening !== undefined && opening.submit) {
+      const firstSeq = agent.session.seq
+      state.streamed = false
+      running = agent
+      agent.followup(opening.message)
+      await agent.whenIdle()
+      running = undefined
+      await sessions.flush(agent.session)
+      if (!state.streamed) {
+        const text = intervalText(agent.session.events, firstSeq)
+        if (text !== '') io.write(text)
+      }
+      io.write('\n\n')
+    }
+    io.prompt()
+    for (let next = await lines.next(); next.done !== true; next = await lines.next()) {
+      const line = next.value
       const command = line.trim()
       if (command === '/exit' || command === '/quit') break
       if (command === '') {

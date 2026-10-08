@@ -43,6 +43,56 @@ describe('resolving an invocation', () => {
       })
   })
 
+  it('carries a staged rotation as context the successor answers, not context it queues', () => {
+    // A rotation seed is the carry-forward with the user's own typed message
+    // concatenated on. Queued, the pane opens with their question sitting
+    // unanswered in the conversation and nothing on screen; the successor has
+    // to take it as a turn and reply to it.
+    expect(resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextFile: '/tmp/seed.txt',
+      contextAsTurn: true,
+    }, () => 'the summary\n\nand what I typed')).toEqual({
+      interactive: true,
+      initialContext: 'the summary\n\nand what I typed',
+      contextAsTurn: true,
+      sessionId: 'conv-1',
+      mode: 'create',
+    })
+  })
+
+  it('opens unseeded when the context file cannot be read, rather than refusing', () => {
+    // A refusal here exits the process, and by then the caller has already
+    // respawned the pane and recorded the rotation as done — so the refusal
+    // is a dead pane. An unseeded conversation is recoverable: the gateway
+    // holds the same text on the session row and hands it back on the next
+    // attach.
+    expect(resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextFile: '/tmp/gone.txt',
+      contextAsTurn: true,
+    }, () => { throw new Error('ENOENT') })).toEqual({
+      interactive: true,
+      sessionId: 'conv-1',
+      mode: 'create',
+    })
+  })
+
+  it('opens unseeded when the context file holds nothing to answer', () => {
+    expect(resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextFile: '/tmp/blank.txt',
+      contextAsTurn: true,
+    }, () => '  \n\t ')).toEqual({
+      interactive: true,
+      sessionId: 'conv-1',
+      mode: 'create',
+    })
+  })
+
+  it('refuses to answer an opening context when there is none to answer', () => {
+    expect(() => resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextAsTurn: true,
+    })).toThrow(UsageError)
+  })
+
   it('refuses a positional task and goal driving in interactive mode', () => {
     expect(() => resolveInvocation(['task'], { resume: 'conv-1', interactive: true }))
       .toThrow(UsageError)
@@ -87,6 +137,7 @@ describe('the bundle patch that hands startup values to the runner', () => {
     }, () => 'text'))
     const interactive = Object.keys(resolveInvocation([], {
       sessionId: 'abc', interactive: true, contextFile: 'context',
+      contextAsTurn: true,
     }, () => 'text'))
     const resolved = [...new Set([...batch, ...interactive])]
 

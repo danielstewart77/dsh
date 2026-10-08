@@ -82,6 +82,7 @@
         mode: !!js ctx.resumableHeadlessStartup.mode
         interactive: !!js ctx.resumableHeadlessStartup.interactive
         initialContext: !!js ctx.resumableHeadlessStartup.initialContext
+        contextAsTurn: !!js ctx.resumableHeadlessStartup.contextAsTurn
         goalRounds: !!js ctx.resumableHeadlessStartup.goalRounds
         goalObjective: !!js ctx.resumableHeadlessStartup.goalObjective
         stopOnFailedCall: !!js ctx.resumableHeadlessStartup.stopOnFailedCall
