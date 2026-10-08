@@ -60,6 +60,33 @@ describe('resolving an invocation', () => {
     })
   })
 
+  it('opens unseeded when the context file cannot be read, rather than refusing', () => {
+    // A refusal here exits the process, and by then the caller has already
+    // respawned the pane and recorded the rotation as done — so the refusal
+    // is a dead pane. An unseeded conversation is recoverable: the gateway
+    // holds the same text on the session row and hands it back on the next
+    // attach.
+    expect(resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextFile: '/tmp/gone.txt',
+      contextAsTurn: true,
+    }, () => { throw new Error('ENOENT') })).toEqual({
+      interactive: true,
+      sessionId: 'conv-1',
+      mode: 'create',
+    })
+  })
+
+  it('opens unseeded when the context file holds nothing to answer', () => {
+    expect(resolveInvocation([], {
+      sessionId: 'conv-1', interactive: true, contextFile: '/tmp/blank.txt',
+      contextAsTurn: true,
+    }, () => '  \n\t ')).toEqual({
+      interactive: true,
+      sessionId: 'conv-1',
+      mode: 'create',
+    })
+  })
+
   it('refuses to answer an opening context when there is none to answer', () => {
     expect(() => resolveInvocation([], {
       sessionId: 'conv-1', interactive: true, contextAsTurn: true,

@@ -207,27 +207,37 @@ export async function runInteractive(
   })
 
   io.write(`${mindLabel()} · DSH · ${selection.model}\nConversation ${config.sessionId}\nType /exit to close. Ctrl+C interrupts a running turn.\n\n`)
-  // A staged rotation opens owing the user an answer: its seed carries the
-  // message they typed into the conversation this one replaced. Answered here
-  // rather than queued, before the first prompt, so the reply is on screen
-  // when they look at the pane.
-  if (opening !== undefined && opening.submit) {
-    const firstSeq = agent.session.seq
-    state.streamed = false
-    running = agent
-    agent.followup(opening.message)
-    await agent.whenIdle()
-    running = undefined
-    await sessions.flush(agent.session)
-    if (!state.streamed) {
-      const text = intervalText(agent.session.events, firstSeq)
-      if (text !== '') io.write(text)
-    }
-    io.write('\n\n')
-  }
-  io.prompt()
+  // Taken before the opening turn, not at the `for await` below. The iterator
+  // attaches readline's line listener when it is created, and lines emitted
+  // before that are dropped — so a user typing during an opening turn, which
+  // is a whole model turn long and comes right after a rotation when they are
+  // most likely to be typing, would watch readline echo their follow-up and
+  // then see it vanish.
+  const lines = io.lines[Symbol.asyncIterator]()
   try {
-    for await (const line of io.lines) {
+    // A staged rotation opens owing the user an answer: its seed carries the
+    // message they typed into the conversation this one replaced. Answered
+    // here rather than queued, before the first prompt, so the reply is on
+    // screen when they look at the pane. Inside the try, so a throw from the
+    // turn or from the flush still tears the pane's listeners down rather
+    // than leaving a prompt-less pane alive on a dead event loop.
+    if (opening !== undefined && opening.submit) {
+      const firstSeq = agent.session.seq
+      state.streamed = false
+      running = agent
+      agent.followup(opening.message)
+      await agent.whenIdle()
+      running = undefined
+      await sessions.flush(agent.session)
+      if (!state.streamed) {
+        const text = intervalText(agent.session.events, firstSeq)
+        if (text !== '') io.write(text)
+      }
+      io.write('\n\n')
+    }
+    io.prompt()
+    for (let next = await lines.next(); next.done !== true; next = await lines.next()) {
+      const line = next.value
       const command = line.trim()
       if (command === '/exit' || command === '/quit') break
       if (command === '') {

@@ -196,25 +196,27 @@ export function resolveInvocation(
     throw new UsageError('--goal-rounds belongs to one-shot mode, not --interactive')
   }
   const contextFile = options.contextFile?.trim() ?? ''
+  // The flag alone is a malformed invocation and is refused. A file that is
+  // named but unreadable, or that holds nothing, is a *runtime* condition and
+  // opens the conversation unseeded instead — by the time this process runs,
+  // the caller has already respawned the pane and recorded the rotation as
+  // done, so refusing is a dead pane. An unseeded conversation is recoverable:
+  // the gateway holds the same text on the session row and hands it back on
+  // the next attach. A dead pane is not.
+  const contextAsTurn = options.contextAsTurn === true
+  if (contextAsTurn && contextFile === '') {
+    throw new UsageError('--context-as-turn needs a --context-file holding the turn to answer')
+  }
   let initialContext = ''
   if (contextFile !== '') {
     if (!interactive) throw new UsageError('--context-file requires --interactive')
     try {
       initialContext = readTask(contextFile)
       if (readTask === readInputFile) unlinkSync(contextFile)
-    } catch (error: unknown) {
-      throw new UsageError(
-        `--context-file ${contextFile} could not be read: `
-        + `${error instanceof Error ? error.message : String(error)}`,
-      )
+    } catch {
+      initialContext = ''
     }
-  }
-  // A seed that must be answered but is not there would open the pane on
-  // nothing while this process reported a successful rotation, so the flag is
-  // refused rather than ignored.
-  const contextAsTurn = options.contextAsTurn === true
-  if (contextAsTurn && initialContext.trim() === '') {
-    throw new UsageError('--context-as-turn needs a --context-file holding the turn to answer')
+    if (initialContext.trim() === '') initialContext = ''
   }
   const objectiveFile = options.goalObjectiveFile?.trim() ?? ''
   let goalObjective = ''
@@ -236,7 +238,7 @@ export function resolveInvocation(
     ? {
       interactive: true as const,
       ...(initialContext === '' ? {} : { initialContext }),
-      ...(contextAsTurn ? { contextAsTurn: true } : {}),
+      ...(contextAsTurn && initialContext !== '' ? { contextAsTurn: true } : {}),
     }
     : { task }
   const identity = resumed !== ''
