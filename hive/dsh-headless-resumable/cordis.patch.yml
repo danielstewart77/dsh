@@ -41,6 +41,12 @@
         apiKeyEnv: HIVE_PROXY_KEY  # secret-guard: allow — a variable name, not a value
         api: openai-completions
         baseURL: !!js process.env.DSH_PROXY_BASE_URL
+        # The proxy judges a request by the harness that sent it, and the chat
+        # wire alone reads as Codex: a model granted to dsh and withheld from
+        # Codex would be offered in this harness's picker and refused on its
+        # first turn.
+        headers:
+          X-Hive-Harness: dsh
         # The capacity assumed for a model nothing sizes — which, on an open
         # route, is every model. The mind's own default model is what this is
         # set from, so a conversation started on it is sized correctly and one
