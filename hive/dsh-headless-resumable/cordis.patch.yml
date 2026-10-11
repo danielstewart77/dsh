@@ -72,6 +72,25 @@
     - id: resumable-headless-startup
       name: '@hive/dsh-headless-resumable/startup'
 
+    # The mind's own per-turn hooks, in Claude Code's dialect, because that is
+    # the dialect every mind in this hive already writes its hooks in and a
+    # second copy per harness is a second copy to keep in step.
+    #
+    # Disabled unless the mind names a config, so a mind with no hooks loads
+    # this bundle unchanged rather than logging a failed read on every boot.
+    # The path is per mind for the same reason each mind owns its own copy of
+    # every hook: one shared file would make one mind's rotation threshold and
+    # memory attribution another's.
+    - id: hooks-claude-code
+      name: '@deepseek-ai/dsh-hooks-claude-code'
+      # Expressed as a comparison rather than a negation: a `!` directly
+      # after the `!!js` tag reads as a second tag property and the YAML
+      # parser refuses the whole overlay, which takes the mind's boot with it.
+      disabled: !!js (process.env.DSH_HOOKS_CONFIG ?? '') === ''
+      config:
+        configPath: !!js process.env.DSH_HOOKS_CONFIG
+        projectDir: !!js process.env.HIVE_PROJECT_DIR
+
     # Reads its task and conversation identity from the startup provider.
     - id: resumable-headless-runner
       name: '@hive/dsh-headless-resumable'
