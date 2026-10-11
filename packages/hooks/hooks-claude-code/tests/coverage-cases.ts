@@ -37,7 +37,13 @@ function hooks(d: string, h: unknown): string {
   writeFileSync(join(d, 'hooks.json'), JSON.stringify({ hooks: h })); return join(d, 'hooks.json')
 }
 
-type HarnessOpts = { pluginRoot?: string; projectDir?: string; stderrSummaryMaxChars?: number; sessionRoot?: string }
+type HarnessOpts = {
+  pluginRoot?: string
+  projectDir?: string
+  env?: Record<string, string>
+  stderrSummaryMaxChars?: number
+  sessionRoot?: string
+}
 async function harness(configPath: string, adapter: MockAdapter, opts: HarnessOpts = {}): Promise<Context> {
   const ctx = new Context()
   await mountAgentLoopTestDependencies(ctx)
@@ -486,6 +492,21 @@ export function defineCoverageCases(group: CoverageGroup): void {
       expect(events(handle.agent).some(e => e.type === 'user/message'
       && e.data.content.some(b => b.type === 'text' && b.text.includes(`dir=${workspace}`)))).toBe(true)
       await handle.dispose()
+    })
+
+    it('hands a hook the credential-shaped variables its config names, which the subprocess scrub drops', async () => {
+    // Every child of this harness starts from an environment with KEY/TOKEN/SECRET names removed, so a
+    // hook that authenticates to anything gets its credential only by the bridge's config naming it.
+      const d = dir()
+      const s = sh(d, 'ctx.sh', '#!/usr/bin/env bash\nprintf \'{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"bearer=%s"}}\' "$HOOK_TEST_BEARER_TOKEN"\n')
+      const path = hooks(d, { UserPromptSubmit: [{ hooks: [{ type: 'command', command: s }] }] })
+      const adapter = new MockAdapter([textResponse('ran')])
+      const ctx = await harness(path, adapter, { env: { HOOK_TEST_BEARER_TOKEN: 'b-123' } })
+      const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+      agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+      await waitForIdle(ctx, agent)
+      expect(events(agent).some(e => e.type === 'user/message'
+      && e.data.content.some(b => b.type === 'text' && b.text.includes('bearer=b-123')))).toBe(true)
     })
 
     it('a context-only UserPromptSubmit hook DELEGATES so a later listener can still block', async () => {
