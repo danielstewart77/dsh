@@ -49,3 +49,27 @@ export function contentWithoutImages(content: readonly ContentBlock[]): ContentB
   }
   return kept
 }
+
+/**
+ * Every message with its images dropped, each left with a body.
+ *
+ * A message stripped to nothing is not the same as a message that was always
+ * empty: a user who pasted a screenshot with no caption has their whole turn
+ * erased, and the conversion then sends an empty user turn that endpoints
+ * refuse — which is the failure the strip exists to recover from, arriving a
+ * second time. So an emptied message says what was taken out.
+ * @param messages - the turn's messages.
+ * @returns the messages with every nested image removed.
+ */
+export function messagesWithoutImages<M extends { content: readonly ContentBlock[] }>(
+  messages: readonly M[],
+): M[] {
+  return messages.map((message) => {
+    if (!contentHasImage(message.content)) return message
+    const content = contentWithoutImages(message.content)
+    return {
+      ...message,
+      content: content.length === 0 ? [{ type: 'text', text: IMAGE_OMITTED_TEXT }] : content,
+    }
+  })
+}
