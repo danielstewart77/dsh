@@ -16,6 +16,7 @@ const config: Config = {
   projectDir: '/path/to/project',    // optional: replaces ${CLAUDE_PROJECT_DIR} AND sets the hook env var; defaults to the session cwd when omitted
   defaultTimeoutMs: 600_000,         // optional: per-hook timeout when a hook sets none (CC default)
   stderrSummaryMaxChars: 500,        // optional: char cap on the hook/result event's persisted stderr summary
+  env: { MY_API_TOKEN: '…' },        // optional: variables every hook process is handed over the scrubbed base
 }
 ```
 
@@ -29,6 +30,8 @@ In a `cordis.yml`:
 ```
 
 The config is parsed **once** at load. `configPath` is **process-level**: a relative path resolves against the process's launch cwd at load time, so a single config applies to the whole process — there is no per-session (`session/new.cwd`) config discovery yet (`TODO(per-session-hook-config)`). A read/parse failure is contained — including an invalid regex matcher on an event that consumes matchers, reported with its pattern and event — and the bridge logs a warning and registers nothing rather than crashing boot (a typo'd path must not take the agent down). Only shell-form `type: 'command'` hooks run; an `http`/`mcp_tool`/`prompt`/`agent` hook is parsed-and-skipped with a warning. A hook with no per-hook `timeout` runs under the protocol's reference default (`DEFAULT_HOOK_TIMEOUT_MS` from `dsh-hook-protocol`, 10 minutes — the CC default).
+
+Hooks run over the subprocess runtime's scrubbed environment, which drops every credential-shaped name (`KEY`/`TOKEN`/`SECRET`/`PASSWORD`). Claude Code's hooks inherit its whole environment, so a hook that authenticates to anything gets its credential here only when `env` names it; `CLAUDE_PROJECT_DIR` is set over those entries.
 
 The hooks **themselves** run in the agent's session workspace: for the agent-scoped points the bridge passes the session's `cwd` (the `session/new.cwd`) as the hook process's working directory, so a hook's `pwd`/relative-path/marker operates in the user's project tree, not the server launch dir.
 

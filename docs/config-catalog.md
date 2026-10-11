@@ -689,10 +689,18 @@ export interface Config {
   defaultTimeoutMs?: number
   /** Character cap for the `hook/result` event's persisted stderr summary. */
   stderrSummaryMaxChars?: number
+  /**
+   * Variables every hook process is handed, over the subprocess runtime's scrubbed base.
+   * Claude Code's hooks inherit its whole environment; every child of this harness starts
+   * without the credential-shaped names (KEY/TOKEN/SECRET/PASSWORD), so a hook that
+   * authenticates to anything has its credential only when this names it.
+   * `CLAUDE_PROJECT_DIR` is set over these.
+   */
+  env?: Record<string, string>
 }
 ```
 
-Source: [`packages/hooks/hooks-claude-code/src/index.ts:45`](../packages/hooks/hooks-claude-code/src/index.ts)
+Source: [`packages/hooks/hooks-claude-code/src/index.ts:48`](../packages/hooks/hooks-claude-code/src/index.ts)
 
 <a id="deepseek-aidsh-hooks-codex"></a>
 
@@ -719,7 +727,7 @@ export interface Config {
 }
 ```
 
-Source: [`packages/hooks/hooks-codex/src/index.ts:44`](../packages/hooks/hooks-codex/src/index.ts)
+Source: [`packages/hooks/hooks-codex/src/index.ts:45`](../packages/hooks/hooks-codex/src/index.ts)
 
 <a id="deepseek-aidsh-host-apiproxy"></a>
 

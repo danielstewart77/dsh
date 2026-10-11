@@ -102,6 +102,13 @@
       config:
         configPath: !!js process.env.DSH_HOOKS_CONFIG
         projectDir: !!js process.env.HIVE_PROJECT_DIR
+        # The whole environment the mind spawned this turn with, credentials
+        # included. Every child of the harness starts with KEY/TOKEN/SECRET
+        # names scrubbed, and the mind's hooks authenticate to the gateway and
+        # to memory and read their rotation threshold from exactly such names —
+        # without them every size report is refused and no threshold is known.
+        # The hooks are the mind's own, trusted as the harness is.
+        env: !!js ({ ...process.env })
 
     # Reads its task and conversation identity from the startup provider.
     - id: resumable-headless-runner

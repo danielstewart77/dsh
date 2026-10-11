@@ -70,6 +70,14 @@ export interface Config {
   defaultTimeoutMs?: number
   /** Character cap for the `hook/result` event's persisted stderr summary. */
   stderrSummaryMaxChars?: number
+  /**
+   * Variables every hook process is handed, over the subprocess runtime's scrubbed base.
+   * Claude Code's hooks inherit its whole environment; every child of this harness starts
+   * without the credential-shaped names (KEY/TOKEN/SECRET/PASSWORD), so a hook that
+   * authenticates to anything has its credential only when this names it.
+   * `CLAUDE_PROJECT_DIR` is set over these.
+   */
+  env?: Record<string, string>
 }
 
 export const Config: z<Config> = z.object({
@@ -78,6 +86,7 @@ export const Config: z<Config> = z.object({
   projectDir: z.string(),
   defaultTimeoutMs: z.number().default(DEFAULT_HOOK_TIMEOUT_MS),
   stderrSummaryMaxChars: z.number().default(DEFAULT_STDERR_SUMMARY_MAX_CHARS),
+  env: z.dict(z.string()).default({}),
 })
 
 /** A stable per-handler id so an invoked/result pair correlates in the log. */
@@ -151,7 +160,7 @@ export function apply(ctx: Context, config: Config): void {
     // CLAUDE_PROJECT_DIR: an explicit config value wins; otherwise default it to the session
     // workspace (the same dir the hook runs in).
     const projectDir = config.projectDir ?? workdir
-    const hookEnv = projectDir !== undefined ? { CLAUDE_PROJECT_DIR: projectDir } : undefined
+    const hookEnv = { ...config.env, ...projectDir !== undefined ? { CLAUDE_PROJECT_DIR: projectDir } : {} }
     for (const group of groups) {
       if (!matchesMatcher(group.matcher, matchQuery, 'claude-code')) continue
       for (const hook of group.hooks) {
@@ -166,7 +175,7 @@ export function apply(ctx: Context, config: Config): void {
         const { output, durationMs } = await runHook(ctx.shell, hook, {
           payload,
           defaultTimeoutMs,
-          ...hookEnv ? { env: hookEnv } : {},
+          env: hookEnv,
           ...workdir !== undefined ? { cwd: workdir } : {},
           signal: opts.signal,
           trailingNewline: true,
