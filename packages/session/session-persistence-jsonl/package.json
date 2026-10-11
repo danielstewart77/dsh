@@ -23,12 +23,21 @@
       "default": "./lib/invariant.js"
     },
     "./src/*": "./src/*",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./read-log": {
+      "types": "./lib/types/read-log.d.ts",
+      "default": "./lib/read-log.js"
+    },
+    "./read-log-cli": {
+      "default": "./lib/read-log-cli.js"
+    }
   },
   "files": [
     "lib/index.js",
     "lib/invariant.js",
-    "lib/types/**/*.d.ts"
+    "lib/types/**/*.d.ts",
+    "lib/read-log.js",
+    "lib/read-log-cli.js"
   ],
   "license": "MIT",
   "peerDependencies": {

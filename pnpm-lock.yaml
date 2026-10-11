@@ -4656,6 +4656,9 @@ importers:
       '@deepseek-ai/dsh-invariants':
         specifier: workspace:^
         version: link:../../runtime-diagnostics/invariants
+      '@deepseek-ai/dsh-jobs':
+        specifier: workspace:^
+        version: link:../../jobs/jobs
       '@deepseek-ai/dsh-llm':
         specifier: workspace:^
         version: link:../../llm/llm

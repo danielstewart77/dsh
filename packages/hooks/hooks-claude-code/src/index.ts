@@ -17,6 +17,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
 import type { UserMessage } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import type {} from '@deepseek-ai/dsh-jobs'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
   appendHookInvoked,
@@ -219,7 +220,7 @@ export function apply(ctx: Context, config: Config): void {
   ctx.on('agent/pre-step', async ({ agent, messages, turn, signal }, next): Promise<PreStepDecision> => {
     if (messages.length === 0) return next()
     const content = messages.flatMap(message => message.content)
-    const merged = await runPoint('UserPromptSubmit', '', promptPayload(ctx, agent, content), { agent, turn, signal })
+    const merged = await runPoint('UserPromptSubmit', '', promptPayload(ctx, agent, messages, content), { agent, turn, signal })
     if (merged.decision === 'deny') {
       return { kind: 'reject' }
     }
@@ -333,8 +334,29 @@ function base(ctx: Context, agent: Agent | undefined, event: string): Record<str
 function sessionStartPayload(ctx: Context, agent: Agent, source: string): Record<string, unknown> {
   return { ...base(ctx, agent, 'SessionStart'), source }
 }
-function promptPayload(ctx: Context, agent: Agent, content: ContentBlock[]): Record<string, unknown> {
-  return { ...base(ctx, agent, 'UserPromptSubmit'), prompt: blocksToText(content) }
+/**
+ * Build a UserPromptSubmit payload, naming where the submission came from.
+ *
+ * `prompt_sources` is this bridge's own field, with no Claude Code counterpart,
+ * because Claude Code does not need one: the things it submits that a person did
+ * not type — a finished background agent's report, a notification — arrive
+ * wrapped in an envelope tag a hook can read out of the prompt text. Nothing
+ * this harness injects is tagged. A goal round's re-entry, a hook's own
+ * `additionalContext`, a Stop hook's steer text and a job-completion notice are
+ * all plain prose, and `blocksToText` discards the `source` that distinguishes
+ * them — so a hook with only the text in hand cannot tell any of them from
+ * typing, and one that acts on a typed message acts on all of them.
+ *
+ * The distinct `kind`s are reported rather than a single flag, since a hook's
+ * question is not always "was this typed": the kinds are merge-extensible and a
+ * consumer may care which plugin spoke.
+ */
+function promptPayload(ctx: Context, agent: Agent, messages: readonly UserMessage[], content: ContentBlock[]): Record<string, unknown> {
+  return {
+    ...base(ctx, agent, 'UserPromptSubmit'),
+    prompt: blocksToText(content),
+    prompt_sources: [...new Set(messages.map(message => message.source.kind))],
+  }
 }
 function preToolPayload(ctx: Context, exec: ToolExecution): Record<string, unknown> {
   return { ...base(ctx, exec.agent, 'PreToolUse'), tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId }
@@ -342,8 +364,32 @@ function preToolPayload(ctx: Context, exec: ToolExecution): Record<string, unkno
 function postToolPayload(ctx: Context, exec: ToolExecution, result: ToolExecutionResult): Record<string, unknown> {
   return { ...base(ctx, exec.agent, 'PostToolUse'), tool_name: exec.name, tool_input: exec.arguments, tool_use_id: exec.callId, tool_response: blocksToText(result.content) }
 }
+/**
+ * What is still running for this agent, in the field names a Claude Code hook
+ * consumer reads (`type`/`description`/`status`).
+ *
+ * It rides Stop and SubagentStop and nothing else, which is where Claude Code
+ * puts it — a consumer that needs it at prompt time snapshots it from here,
+ * because a hook deciding whether to respawn the pane would otherwise kill the
+ * process group holding the job it was asked about. The listing is scoped to
+ * the calling agent: `list()` with no caller reports another session's labels.
+ *
+ * `JobSnapshot` is mapped rather than passed through. Its own field names are
+ * `kind` and `label`, so an unmapped snapshot renders as a job with no kind and
+ * no description in a message a model is asked to act on.
+ */
+function backgroundTasks(ctx: Context, agent: Agent | undefined): Array<Record<string, unknown>> {
+  if (agent === undefined) return []
+  return (ctx.get('jobs')?.list(agent) ?? []).map(job => ({
+    id: job.id,
+    type: job.kind,
+    description: job.label,
+    status: job.status,
+  }))
+}
+
 function stopPayload(ctx: Context, agent: Agent): Record<string, unknown> {
-  return { ...base(ctx, agent, 'Stop'), stop_hook_active: false }
+  return { ...base(ctx, agent, 'Stop'), stop_hook_active: false, background_tasks: backgroundTasks(ctx, agent) }
 }
 /**
  * Build a SubagentStart/SubagentStop payload from the CC base (the child's
@@ -356,6 +402,8 @@ function subagentPayload(ctx: Context, event: 'SubagentStart' | 'SubagentStop', 
     ...base(ctx, child, event),
     agent_id: info.id,
     agent_type: SUBAGENT_TYPE,
-    ...event === 'SubagentStop' ? { stop_hook_active: false } : {},
+    ...event === 'SubagentStop'
+      ? { stop_hook_active: false, background_tasks: backgroundTasks(ctx, child) }
+      : {},
   }
 }

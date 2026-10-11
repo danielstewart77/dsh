@@ -14,6 +14,7 @@ import { LocalBashExecutor } from '@deepseek-ai/dsh-bash-local'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import { scopeTarget } from '@deepseek-ai/dsh-scope'
 import SubagentRuntime, { SubagentRunId } from '@deepseek-ai/dsh-subagent'
+import LocalJobRegistry from '@deepseek-ai/dsh-jobs-local'
 import * as HooksClaude from '@deepseek-ai/dsh-hooks-claude-code'
 import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 
@@ -442,5 +443,92 @@ describe('hooks-claude-code bridge — load resilience', () => {
     expect(unwrapped.name).toBe('hooks-claude-code')
     expect(unwrapped.inject).toEqual(['shell'])
     expect(typeof unwrapped.apply).toBe('function')
+  })
+})
+
+/** A job that stays `running` for the life of the test, so Stop sees it live. */
+function neverSettles() {
+  return { cancel: () => {}, done: new Promise<never>(() => {}) }
+}
+
+describe('hooks-claude-code bridge — payload provenance', () => {
+  it('a Stop payload names the running jobs in the fields a hook consumer reads', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
+    dirs.push(dir)
+    const capture = join(dir, 'stop-payload.json')
+    const stopHook = join(dir, 'stop.sh')
+    writeFileSync(stopHook, `#!/usr/bin/env bash\ncat > "${capture}"\n`)
+    chmodSync(stopHook, 0o755)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: {
+      Stop: [{ hooks: [{ type: 'command', command: stopHook }] }],
+    } }))
+
+    const adapter = new MockAdapter([textResponse('ok')])
+    const ctx = await harness(dir, adapter, (c) => { void c.plugin(LocalJobRegistry, {}) })
+    ctx.jobs.attachController('test')
+    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    ctx.jobs.start({ kind: 'bash', label: 'pytest -q', owner: agent, run: neverSettles })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    await waitFor(() => existsSync(capture))
+
+    const payload = JSON.parse(readFileSync(capture, 'utf8')) as {
+      background_tasks?: Array<{ type?: string; description?: string; status?: string }>
+    }
+    expect(payload.background_tasks).toEqual([
+      expect.objectContaining({ type: 'bash', description: 'pytest -q', status: 'running' }),
+    ])
+  })
+
+  it('a Stop payload does not name a job owned by another session', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
+    dirs.push(dir)
+    const capture = join(dir, 'stop-payload.json')
+    const stopHook = join(dir, 'stop.sh')
+    writeFileSync(stopHook, `#!/usr/bin/env bash\ncat > "${capture}"\n`)
+    chmodSync(stopHook, 0o755)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: {
+      Stop: [{ hooks: [{ type: 'command', command: stopHook }] }],
+    } }))
+
+    const adapter = new MockAdapter([textResponse('ok')])
+    const ctx = await harness(dir, adapter, (c) => { void c.plugin(LocalJobRegistry, {}) })
+    ctx.jobs.attachController('test')
+    const mine = ctx.agentLoop.create(SessionId('mine'), { provider: 'mock', model: 'mock' })
+    const theirs = ctx.agentLoop.create(SessionId('theirs'), { provider: 'mock', model: 'mock' })
+    ctx.jobs.start({ kind: 'bash', label: 'someone elses build', owner: theirs, run: neverSettles })
+    mine.followup(createUserMessage({ content: [{ type: 'text', text: 'go' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, mine)
+    await waitFor(() => existsSync(capture))
+
+    const payload = JSON.parse(readFileSync(capture, 'utf8')) as { background_tasks?: unknown[] }
+    expect(payload.background_tasks).toEqual([])
+  })
+
+  it('a UserPromptSubmit payload reports a typed prompt and an injected one differently', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'dsh-hooks-claude-'))
+    dirs.push(dir)
+    const capture = join(dir, 'sources.txt')
+    const promptHook = join(dir, 'prompt.sh')
+    writeFileSync(promptHook, `#!/usr/bin/env bash\njq -c '.prompt_sources' >> "${capture}"\n`)
+    chmodSync(promptHook, 0o755)
+    writeFileSync(join(dir, 'hooks.json'), JSON.stringify({ hooks: {
+      UserPromptSubmit: [{ hooks: [{ type: 'command', command: promptHook }] }],
+    } }))
+
+    const adapter = new MockAdapter([textResponse('one'), textResponse('two')])
+    const ctx = await harness(dir, adapter)
+    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    agent.followup(createUserMessage({ content: [{ type: 'text', text: 'typed' }], source: { kind: 'user' } }))
+    await waitForIdle(ctx, agent)
+    agent.followup(createUserMessage({
+      content: [{ type: 'text', text: 'background job bash-1 finished' }],
+      source: { kind: 'plugin', plugin: 'tool-jobs' },
+    }))
+    await waitForIdle(ctx, agent)
+    await waitFor(() => readFileSync(capture, 'utf8').trimEnd().split('\n').length === 2)
+
+    const seen = readFileSync(capture, 'utf8').trimEnd().split('\n').map(l => JSON.parse(l) as string[])
+    expect(seen).toEqual([['user'], ['plugin']])
   })
 })

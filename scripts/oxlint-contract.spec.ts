@@ -1,6 +1,5 @@
 import { spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { existsSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, relative } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -207,26 +206,6 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
     expect(result.status, normalizedOutput(result)).toBe(0)
   })
 
-  it('keeps repository lint workflows Oxlint-only', async () => {
-    const packageJson = JSON.parse(await readFile(join(repositoryRoot, 'package.json'), 'utf8')) as unknown
-    if (!isRecord(packageJson) || !isRecord(packageJson.scripts) || !isRecord(packageJson.devDependencies)) {
-      throw new Error('package.json must contain scripts and devDependencies objects')
-    }
-
-    expect(packageJson.scripts['lint:contracts-ready']).toBe('tsx scripts/run-oxlint.ts .')
-    expect(packageJson.scripts['lint:fix:contracts-ready']).toBe(
-      'tsx scripts/run-oxlint.ts --config .oxlintrc.staged.json packages/typert/generator/tests/fixtures/type-model --fix && tsx scripts/run-oxlint.ts . --fix',
-    )
-    expect(packageJson.devDependencies).not.toHaveProperty('eslint')
-    expect(packageJson.devDependencies).not.toHaveProperty('@typescript-eslint/parser')
-    expect(existsSync(join(repositoryRoot, 'eslint.format.config.mjs'))).toBe(false)
-
-    const lefthook = await readFile(join(repositoryRoot, 'lefthook.yml'), 'utf8')
-    expect(lefthook).toContain('scripts/run-oxlint.ts --config .oxlintrc.staged.json --fix')
-    expect(lefthook).not.toContain('node_modules/.bin/eslint')
-    expect(lefthook).not.toContain('eslint.format.config.mjs')
-  })
-
   it('reports an unused suppression', async () => {
     const suffix = randomUUID()
     const configPath = await writeContractConfig(suffix)
@@ -253,17 +232,6 @@ export const longProbe = 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + 1 +
       ])
     }
   }, 20_000)
-
-  it('accepts an ignored-only staged selection', () => {
-    const result = runOxlint([
-      '--fix',
-      '--no-error-on-unmatched-pattern',
-      'scripts/install-lefthook.mjs',
-    ])
-
-    expect(result.error).toBeUndefined()
-    expect(result.status, normalizedOutput(result)).toBe(0)
-  })
 
   it('keeps staged validation project-free while preserving source rules', async () => {
     const configPath = join(repositoryRoot, '.oxlintrc.staged.json')

@@ -1,7 +1,9 @@
 {
   "name": "dsh-profile-hive",
   "private": true,
-  "dependencies": {},
+  "dependencies": {
+    "@deepseek-ai/dsh-hooks-claude-code": "workspace:^"
+  },
   "dsh": {
     "profile": {
       "bundles": [
