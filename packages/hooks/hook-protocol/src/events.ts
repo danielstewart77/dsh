@@ -85,7 +85,8 @@ export function appendHookInvoked(session: Session, invocation: HookInvocation):
 /**
  * Append the durable result paired with `hook/invoked`. The recorded decision
  * is the parsed decision, then `stop` for `continue:false`, else `pass`; stderr
- * is trimmed and capped, and an absent process exit stays omitted.
+ * is trimmed and capped, an absent process exit stays omitted, and a request to
+ * rotate the conversation is kept.
  * @param session - the session whose open turn records the event.
  * @param record - the outcome to record: the decoded output plus the summary cap and duration.
  */
@@ -100,5 +101,6 @@ export function appendHookResult(session: Session, record: HookResultRecord): vo
     ...output.exitCode !== undefined ? { exitCode: output.exitCode } : {},
     ...stderrSummary !== undefined ? { stderrSummary } : {},
     durationMs: record.durationMs,
+    ...output.rotate === true ? { rotate: true as const } : {},
   })
 }

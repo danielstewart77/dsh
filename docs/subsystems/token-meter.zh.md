@@ -42,6 +42,36 @@ interface TokenSurfaceNode {
 
 表层顺序具有权威性；替换节点的持久 seq 可能高于位置排在其后的节点。该快照不可变，不会随底层回放折叠推进而增长。
 
+## `ContextMeasured`
+
+```ts type-equiv
+/**
+ * How big the conversation was when a turn closed, and against what ceiling.
+ * Appended as `context/measured` at the turn's stop boundary, before any
+ * listener that reads it, so a hook deciding whether the conversation has
+ * outgrown its model reads the same figure the log keeps.
+ */
+interface ContextMeasured {
+  /** The turn this measures. */
+  readonly turn: number
+  /** The model the turn's last request named, or null when no request was made. */
+  readonly model: string | null
+  /** Request-and-response tokens: the final call's input plus its output. */
+  readonly tokens: number
+  /**
+   * `usage` only when the figure is the provider's count for the turn's own
+   * final call and nothing has entered the conversation since; a count of zero,
+   * one from an earlier call, or one with an estimate added is `estimated`.
+   * `none` when there was nothing to measure.
+   */
+  readonly kind: ContextMeasurementKind
+  /** The model's context window as its route advertised it, or null when none was. */
+  readonly window: number | null
+}
+```
+
+服务在每个轮次的停止边界（包括失败的轮次）追加一条 `context/measured` 事件，且早于其他 `agent/turn-stopping` 监听器运行；Claude Code 与 Codex 的 hook 桥接会把相同字段作为 `context` 交给 Stop hook。`measureTurn(session, turn)` 负责计算该值。
+
 <!-- BEGIN GENERATED cordis-surface (gen-cordis-catalog.ts) — do not edit between markers -->
 
 <a id="cordis-surface"></a>
@@ -57,6 +87,23 @@ Generated from source by `scripts/gen-cordis-catalog.ts` (verified fresh by `pnp
 Replay owner for one service-wide estimator and isolated per-session folds.
 
 ```ts cordis-catalog
+/**
+ * The conversation's size at a turn's close, labelled by where the figure
+ * came from.
+ *
+ * The provider's count stands only when it is for the turn's own final call:
+ * that call's input, cache reads and writes and output, with nothing added to
+ * the conversation since. A call the provider counted as zero input, a turn
+ * whose last call failed, or one that went on adding tool results is the
+ * meter's estimate instead — the last trusted count plus the price of what
+ * came after. A log that cannot be measured reports `none` rather than a
+ * guess.
+ * @param session - the conversation the turn ran in.
+ * @param turn - the turn being closed.
+ * @returns the measurement to record.
+ */
+measureTurn(session: Session, turn: number): ContextMeasured
+
 /**
  * Measure current request pressure and surface through the durable tail.
  *
@@ -86,5 +133,5 @@ estimateMessage(message: Message): number
 
 Types: [EpochHeader](session.md) · [Message](llm-streaming.md) · [Session](session.md)
 
-Source: [`packages/llm/token-meter/src/index.ts:74`](../../packages/llm/token-meter/src/index.ts)
+Source: [`packages/llm/token-meter/src/index.ts:94`](../../packages/llm/token-meter/src/index.ts)
 <!-- END GENERATED cordis-surface -->

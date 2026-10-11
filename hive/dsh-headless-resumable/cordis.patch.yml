@@ -3,10 +3,7 @@
 # sibling of, and mounts no Host, HTTP server, Web runtime or browser plugin.
 #
 # One row differs from `dsh-headless`: the runner is ours, because theirs mints
-# its own session id and cannot continue one. Compaction is left as base
-# configures it — a long build runs past its context window, and a run that dies
-# at the ceiling measures the ceiling rather than the model. The summarizer is
-# the conversation's own model by default, so no second route is involved.
+# its own session id and cannot continue one.
 
 - id: system-prompt
   config:
@@ -70,6 +67,15 @@
 - id: tools
   config:
     mode: !!js process.env.DSH_TOOLS_MODE
+
+# Never compacts on its own. The hive rotates a conversation that has outgrown
+# its model onto a fresh one carrying a summary, and decides when from the size
+# every turn reports; a harness that quietly shrank the conversation underneath
+# would make that size a figure about a conversation nobody is having. A turn
+# that hits the ceiling anyway fails as an overflow, and the hive rotates on it.
+- id: compaction-basic
+  config:
+    auto: false
 
 - insert:
     - id: code-runtime

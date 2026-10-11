@@ -30,4 +30,5 @@
 {"type":"assistant/chunk","seq":28,"time":0,"data":{"turn":1,"step":2,"chunk":{"type":"finish","reason":{"kind":"stop"}}}}
 {"type":"assistant/message","seq":29,"time":0,"data":{"turn":1,"step":2,"message":{"role":"assistant","content":[{"type":"text","text":"CLI tool round trip complete: CLI_TOOL_ROUND_TRIP"}],"source":{"kind":"model","provider":"cli-mock","model":"cli-mock"},"id":"{{sessionId}}"},"usage":{"inputTokens":7,"outputTokens":5,"reasoningTokens":1}},"sourceEventSeqs":[24,25,26,27,28],"surfaceOp":"append"}
 {"type":"step/end","seq":30,"time":0,"data":{"turn":1,"step":2}}
-{"type":"turn/end","seq":31,"time":0,"data":{"turn":1,"reason":{"kind":"completed"}}}
+{"type":"context/measured","seq":31,"time":0,"data":{"turn":1,"model":"cli-mock","tokens":12,"kind":"usage","window":null}}
+{"type":"turn/end","seq":32,"time":0,"data":{"turn":1,"reason":{"kind":"completed"}}}

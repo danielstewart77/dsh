@@ -101,6 +101,8 @@ function applyStructured(output: HookOutput, parsed: Record<string, unknown>, ex
   if (stopReason !== undefined) output.stopReason = stopReason
   const sysMsg = str(parsed, 'systemMessage')
   if (sysMsg !== undefined) output.systemMessage = sysMsg
+  const rotate = bool(parsed, 'rotate')
+  if (rotate !== undefined) output.rotate = rotate
 
   // Top-level legacy `decision` (approve/block ONLY — allow/deny/ask there are
   // invalid per both schemas) + its `reason`.

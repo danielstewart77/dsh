@@ -269,13 +269,21 @@ declare module '@deepseek-ai/cordis' {
      * never short-circuits already-submitted next-step work: same-step
      * `additionalContexts` or racing steering still runs, and the turn
      * closes only when that inbox drains.
+     *
+     * A turn that fails reaches this boundary too, carrying its `failure`,
+     * because what a listener does here — measure the conversation, decide it
+     * has outgrown its model — matters most on the turn that hit the ceiling.
+     * A failed turn closes whatever its listeners do: steering offered then
+     * waits for the next turn rather than continuing this one. A cancelled
+     * turn does not arrive here.
      * @param payload.agent - the agent whose turn is at its stop boundary.
      * @param payload.turn - the turn about to close.
      * @param payload.signal - the current turn's explicit abort signal.
+     * @param payload.failure - present only when the turn is closing on an error: its structured facts.
      * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
      * @mode serial
      */
-    'agent/turn-stopping'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; signal: AbortSignal }): Promise<void> | void
+    'agent/turn-stopping'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; signal: AbortSignal; failure?: LlmFailure }): Promise<void> | void
     // ---- error notifications (emit) ----
     /**
      * A step or turn errored. The machine reports a failure here even when

@@ -690,3 +690,14 @@ describe('malformed replay and listener lifecycle', () => {
     await secondFiber.dispose()
   })
 })
+
+describe('a turn\'s measurement', () => {
+  it('reports none for a log the meter cannot read, rather than a guess', () => {
+    const session = Session.create(SessionId('unreadable-turn'))
+    session.append('turn/start', { turn: 1 })
+    session.append('step/start', { turn: 1, step: 1 })
+    appendUnchecked(session, { type: 'step/start', seq: session.seq, time: 0, data: { turn: 1, step: 2 } })
+
+    expect(meter().measureTurn(session, 1)).toEqual({ turn: 1, model: null, tokens: 0, kind: 'none', window: null })
+  })
+})

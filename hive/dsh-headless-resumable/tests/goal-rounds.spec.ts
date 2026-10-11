@@ -37,6 +37,10 @@ function spyGoals(current?: ReturnType<typeof view>): GoalDriving & { calls: str
       goal = { ...goal!, revision: ref.revision + 1, maxGoalRounds: request.maxGoalRounds }
       return { id: goal.id, revision: goal.revision }
     },
+    disarm: () => {
+      calls.push('disarm')
+      return goal
+    },
   }
 }
 

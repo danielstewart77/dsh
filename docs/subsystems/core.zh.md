@@ -802,7 +802,7 @@ A step or turn errored. The machine reports a failure here even when the error h
 
 Types: [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:290`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:298`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agentinboxclaimed--emit"></a>
 
@@ -1003,6 +1003,8 @@ Source: [`packages/core/agent/src/runtime-types.ts:178`](../../packages/core/age
 
 The turn is about to close: the model owes no response (no live tool calls, no fresh steering). Awaited before the boundary commits — a listener that objects steers (`agent.steer(...)`) and the machine re-reads its inbox: fresh steering runs another step, none closes the turn. Data decides, so listener order cannot change the outcome. The inverse control (stop a tool loop early) is data too: a tool result carrying `concludesTurn` ends the turn at its step. The conclusion never short-circuits already-submitted next-step work: same-step `additionalContexts` or racing steering still runs, and the turn closes only when that inbox drains.
 
+A turn that fails reaches this boundary too, carrying its `failure`, because what a listener does here — measure the conversation, decide it has outgrown its model — matters most on the turn that hit the ceiling. A failed turn closes whatever its listeners do: steering offered then waits for the next turn rather than continuing this one. A cancelled turn does not arrive here.
+
 ```ts cordis-catalog
 /**
  * The turn is about to close: the model owes no response (no live tool
@@ -1015,18 +1017,26 @@ The turn is about to close: the model owes no response (no live tool calls, no f
  * never short-circuits already-submitted next-step work: same-step
  * `additionalContexts` or racing steering still runs, and the turn
  * closes only when that inbox drains.
+ *
+ * A turn that fails reaches this boundary too, carrying its `failure`,
+ * because what a listener does here — measure the conversation, decide it
+ * has outgrown its model — matters most on the turn that hit the ceiling.
+ * A failed turn closes whatever its listeners do: steering offered then
+ * waits for the next turn rather than continuing this one. A cancelled
+ * turn does not arrive here.
  * @param payload.agent - the agent whose turn is at its stop boundary.
  * @param payload.turn - the turn about to close.
  * @param payload.signal - the current turn's explicit abort signal.
+ * @param payload.failure - present only when the turn is closing on an error: its structured facts.
  * Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.
  * @mode serial
  */
-'agent/turn-stopping'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; signal: AbortSignal }): Promise<void> | void
+'agent/turn-stopping'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; signal: AbortSignal; failure?: LlmFailure }): Promise<void> | void
 ```
 
-Types: [Scoped](scope.md)
+Types: [LlmFailure](llm-streaming.md) · [Scoped](scope.md)
 
-Source: [`packages/core/agent/src/runtime-types.ts:278`](../../packages/core/agent/src/runtime-types.ts)
+Source: [`packages/core/agent/src/runtime-types.ts:286`](../../packages/core/agent/src/runtime-types.ts)
 
 <a id="agent-loop-events"></a>
 

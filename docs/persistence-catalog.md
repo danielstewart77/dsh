@@ -90,7 +90,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-Sources: [`packages/core/session/src/types.ts:336`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:343`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:372`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:404`](../packages/core/session/src/types.ts)
+Sources: [`packages/core/session/src/types.ts:339`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:346`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:375`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:407`](../packages/core/session/src/types.ts)
 
 ## Events
 
@@ -389,6 +389,22 @@ Types: [ContentBlock](subsystems/core.md) · [TokenUsage](subsystems/llm-streami
 
 Source: [`packages/compaction/compaction/src/types.ts:33`](../packages/compaction/compaction/src/types.ts)
 
+### `context/*`
+
+<a id="contextmeasured--log-only"></a>
+
+#### `context/measured` — log-only
+
+```ts persistence-catalog
+/**
+ * Log-only: the conversation's size at a turn's stop boundary — including
+ * a turn that failed. Not a surface event; it never reaches a model.
+ */
+'context/measured': ContextMeasured
+```
+
+Source: [`packages/llm/token-meter/src/types.ts:80`](../packages/llm/token-meter/src/types.ts)
+
 ### `feedback/*`
 
 <a id="feedbackrecord--log-only"></a>
@@ -465,6 +481,12 @@ Source: [`packages/hooks/hook-protocol/src/types.ts:19`](../packages/hooks/hook-
   exitCode?: number
   stderrSummary?: string
   durationMs: number
+  /**
+   * Present when the hook asked for the conversation to be rotated
+   * (top-level `"rotate": true`). Only a Stop hook's request is acted on,
+   * and only by a surface driving a goal; see {@link HookOutput.rotate}.
+   */
+  rotate?: true
 }
 ```
 
@@ -543,7 +565,7 @@ Source: [`packages/plan/plan-mode/src/index.ts:53`](../packages/plan/plan-mode/s
 'request/context': RequestContext
 ```
 
-Source: [`packages/core/session/src/types.ts:309`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:312`](../packages/core/session/src/types.ts)
 
 <a id="requestheader--log-only"></a>
 
@@ -557,7 +579,7 @@ Source: [`packages/core/session/src/types.ts:309`](../packages/core/session/src/
 'request/header': { header: EpochHeader; reason: RequestHeaderReason }
 ```
 
-Source: [`packages/core/session/src/types.ts:304`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:307`](../packages/core/session/src/types.ts)
 
 ### `sandbox/*`
 
@@ -632,7 +654,7 @@ Source: [`packages/schedule/schedule/src/types.ts:219`](../packages/schedule/sch
 'session/end-seed': Record<string, never>
 ```
 
-Source: [`packages/core/session/src/types.ts:332`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:335`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 
@@ -719,7 +741,7 @@ Source: [`packages/subagent/subagent/src/descriptor.ts:37`](../packages/subagent
 
 Types: [TodoItem](subsystems/session.md)
 
-Source: [`packages/core/session/src/types.ts:299`](../packages/core/session/src/types.ts)
+Source: [`packages/core/session/src/types.ts:302`](../packages/core/session/src/types.ts)
 
 ### `tool/*`
 
@@ -808,7 +830,10 @@ Source: [`packages/core/tools/src/types.ts:40`](../packages/core/tools/src/types
   turn: number
   step: number
   message: ToolResultMessage
-  error?: { name: string; code: string }
+  // `message` is what the failure actually said, which is usually the whole
+  // fix: "`file_text` is required for command: create" names the gap, where
+  // INVALID_ARGS alone sends a reader to the session log to find out.
+  error?: { name: string; code: string; message?: string }
   meta?: JsonValue
 }
 ```

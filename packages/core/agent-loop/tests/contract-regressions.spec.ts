@@ -370,6 +370,46 @@ describe('plugin exceptions are contained', () => {
 
 })
 
+describe('a failed turn at its stop boundary', () => {
+  it('reports the turn\'s own failure even when a stop listener fails on it too', async () => {
+    const adapter = new MockAdapter([() => { throw new LlmError('upstream refused', 'SERVER') }])
+    const ctx = await harness(adapter)
+    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    const failures: (string | undefined)[] = []
+    ctx.on('agent/turn-stopping', ({ failure }) => {
+      failures.push(failure?.code)
+      throw new Error('broken stop listener')
+    })
+    const reported: unknown[] = []
+    ctx.on('agent/error', ({ error }) => { reported.push(error) })
+
+    send(agent, 'first')
+    await waitForIdle(ctx, agent)
+
+    expect(failures).toEqual(['SERVER'])
+    // What is reported is the model's refusal, not the listener that broke on it.
+    expect(reported).toHaveLength(1)
+    expect(reported[0]).toBeInstanceOf(LlmError)
+    expect((reported[0] as LlmError).message).toBe('upstream refused')
+  })
+
+  it('does not run the boundary twice when the failure came out of the boundary itself', async () => {
+    const adapter = new MockAdapter([textResponse('one')])
+    const ctx = await harness(adapter)
+    const agent = ctx.agentLoop.create(SessionId('a1'), { provider: 'mock', model: 'mock' })
+    let calls = 0
+    ctx.on('agent/turn-stopping', () => {
+      calls += 1
+      throw new Error('broken stop listener')
+    })
+
+    send(agent, 'first')
+    await waitForIdle(ctx, agent)
+
+    expect(calls).toBe(1)
+  })
+})
+
 describe('disposal leaves the two-state status contract balanced', () => {
   it('disposing the fiber ends the active turn and never starts its queued tail', async () => {
     const adapter = new MockAdapter(['hang'])

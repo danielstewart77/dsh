@@ -395,6 +395,11 @@
     },
     {
       "doc": "docs/subsystems/token-meter.md",
+      "symbol": "ContextMeasured",
+      "source": "packages/llm/token-meter/src/types.ts"
+    },
+    {
+      "doc": "docs/subsystems/token-meter.md",
       "symbol": "TokenMeasurement",
       "source": "packages/llm/token-meter/src/types.ts"
     },
