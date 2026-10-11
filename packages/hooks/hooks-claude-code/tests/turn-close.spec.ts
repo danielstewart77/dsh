@@ -13,7 +13,7 @@ import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
 import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import TokenMeter from '@deepseek-ai/dsh-token-meter'
 import * as HooksClaude from '@deepseek-ai/dsh-hooks-claude-code'
-import { MockAdapter, textResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
+import { MockAdapter, textResponse, toolCallResponse } from '../../../core/agent-loop/tests/mock-adapter.ts'
 
 /**
  * What a turn's close hands the mind's Stop hook: whether the turn failed, and
@@ -117,6 +117,19 @@ describe('the conversation size a Stop hook is handed', () => {
     const context = payload['context'] as { kind: string; tokens: number }
     expect(context.kind).toBe('estimated')
     expect(context.tokens).toBeGreaterThan(0)
+  })
+
+  it('is an estimate when a counted call was followed by a tool result and a call that failed', async () => {
+    const payload = await stopPayloadOf([
+      // Counted, and well above anything the estimate could reach, so a stale
+      // count reused as the final one would show as `usage`.
+      () => toolCallResponse('call-1', 'bash', { command: 'echo hi' }).map(chunk => chunk.type === 'usage'
+        ? { type: 'usage' as const, usage: { inputTokens: 150_000, outputTokens: 5 } }
+        : chunk),
+      () => { throw new LlmError('maximum context length is 200000 tokens', CONTEXT_WINDOW_EXCEEDED_CODE) },
+    ])
+
+    expect(payload['context']).toMatchObject({ kind: 'estimated' })
   })
 
   it('is none when the turn failed before anything reached the conversation', async () => {

@@ -23,6 +23,7 @@ import GoalService from '@deepseek-ai/dsh-goal'
 import * as GoalRoundDriver from '@deepseek-ai/dsh-goal-round-driver'
 import * as HooksClaude from '@deepseek-ai/dsh-hooks-claude-code'
 import LocalSubprocessRuntime from '@deepseek-ai/dsh-subprocess-local'
+import { CONTEXT_WINDOW_EXCEEDED_CODE, LlmError } from '@deepseek-ai/dsh-llm'
 import { MockAdapter, textResponse } from '../../../packages/core/agent-loop/tests/mock-adapter.ts'
 
 import { apply, internals } from '../src/index.ts'
@@ -60,7 +61,13 @@ function rotatingStopHook(fire: number): string {
 }
 
 /** Run one goal dispatch to its report over a real loop with only the model scripted. */
-async function dispatch(hooksPath: string, rounds: number): Promise<TurnReport> {
+async function dispatch(
+  hooksPath: string,
+  rounds: number,
+  script: ConstructorParameters<typeof MockAdapter>[0] = Array.from(
+    { length: rounds + 2 }, (_, index) => textResponse(`worked on it ${index}`),
+  ),
+): Promise<TurnReport> {
   const ctx = new Context()
   contexts.push(ctx)
   await mountAgentLoopTestDependencies(ctx)
@@ -71,9 +78,7 @@ async function dispatch(hooksPath: string, rounds: number): Promise<TurnReport> 
   await ctx.plugin(LocalSubprocessRuntime)
   await ctx.plugin(LocalBashExecutor, { timeoutMs: 10_000 })
   await ctx.plugin(HooksClaude, { configPath: hooksPath })
-  ctx.llm.registerAdapter(['mock'], new MockAdapter(
-    Array.from({ length: rounds + 2 }, (_, index) => textResponse(`worked on it ${index}`)),
-  ))
+  ctx.llm.registerAdapter(['mock'], new MockAdapter(script))
 
   let out = ''
   internals.stdout = { write: (chunk: string) => { out += chunk; return true } }
@@ -88,11 +93,24 @@ async function dispatch(hooksPath: string, rounds: number): Promise<TurnReport> 
 
 describe('a goal run whose Stop hook asks for rotation', () => {
   it('ends after the round the hook closed, reporting the goal unfinished with the rounds it never started', async () => {
-    // The task's own turn is the first Stop; the first goal round is the second.
-    const report = await dispatch(rotatingStopHook(2), 5)
+    // The task's own turn is the first Stop; goal rounds one and two are the
+    // second and third, so three of the five rounds were never started.
+    const report = await dispatch(rotatingStopHook(3), 5)
 
     expect(report.outcome).toBe('rotation_needed')
-    expect(report.turns).toBe(2)
-    expect(report.goal).toEqual({ objective: 'build the app', roundsLeft: 4 })
+    expect(report.turns).toBe(3)
+    expect(report.goal).toEqual({ objective: 'build the app', roundsLeft: 5 - 2 })
+  }, 30_000)
+
+  it('reports an overflow in the round as the overflow, not as a rotation', async () => {
+    // The round that hits the ceiling is the one whose Stop hook asks for rotation.
+    const report = await dispatch(rotatingStopHook(2), 5, [
+      textResponse('worked on it'),
+      () => { throw new LlmError('maximum context length is 200000 tokens', CONTEXT_WINDOW_EXCEEDED_CODE) },
+    ])
+
+    expect(report.outcome).toBe('error')
+    expect(report.error?.code).toBe(CONTEXT_WINDOW_EXCEEDED_CODE)
+    expect(report.goal).toBeUndefined()
   }, 30_000)
 })
