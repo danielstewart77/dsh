@@ -34,12 +34,14 @@ import type {
 import {
   attributionHeaders,
   contentHasImage,
+  contentWithoutImages,
   LlmAdapter,
   LlmError,
   ReasoningEffortId,
 } from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
+  LlmFailure,
   LlmModelInfo,
   LlmProviderInfo,
   LlmResolvedModelInfo,
@@ -51,7 +53,25 @@ import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import { idleWatchdog, timeoutOf } from '@deepseek-ai/dsh-timeout'
 import type { ResolvedPiAiProviderProfile } from './config.ts'
 import { toPiContext } from './context.ts'
-import { toStreamChunks } from './stream.ts'
+import { isImageInputRefusal, toStreamChunks } from './stream.ts'
+
+/** One route/model pair, as the learned-refusal set keys them. */
+function routeKey(provider: string, model: string): string {
+  return `${provider}\u0000${model}`
+}
+
+/**
+ * The failure carried by a chunk that is an endpoint refusing image input.
+ *
+ * pi-ai never throws mid-stream: a failure arrives as a terminal `finish`
+ * chunk, so the refusal has to be read off the chunk rather than caught.
+ * @param chunk - one chunk from an attempt.
+ * @returns the failure when the chunk refuses the request over an image.
+ */
+function imageRefusalOf(chunk: StreamChunk): LlmFailure | undefined {
+  if (chunk.type !== 'finish' || chunk.reason.kind !== 'error') return undefined
+  return isImageInputRefusal(chunk.reason.failure.message) ? chunk.reason.failure : undefined
+}
 
 /** One resolution's frozen view: the profiles and the collection built from them. */
 interface PiAiSnapshot {
@@ -193,6 +213,18 @@ function requestHeaders(headers: Readonly<Record<string, string>> | undefined): 
 export class PiAiAdapter extends LlmAdapter {
   private snapshot: PiAiSnapshot | undefined
 
+  /**
+   * Route/model pairs this process has seen the endpoint refuse for image
+   * input, so each is paid for once rather than once per turn.
+   *
+   * Process memory, deliberately: the fact belongs to a deployment that can
+   * change under us. A model upgraded to vision, or an id repointed at a
+   * different deployment, would be refused images for as long as a durable
+   * record outlived it, and the cost of being wrong the other way is a single
+   * round trip after a restart.
+   */
+  private readonly imageRefusals = new Set<string>()
+
   constructor(private readonly config: PiAiAdapterOptions) {
     super()
   }
@@ -255,6 +287,21 @@ export class PiAiAdapter extends LlmAdapter {
     throw new LlmError(`pi-ai provider "${provider}" has no configured model "${model}"`, 'UNKNOWN_MODEL')
   }
 
+  /**
+   * The input modalities a route may actually be sent, which is the
+   * descriptor's own set minus anything the endpoint has refused.
+   *
+   * Published rather than kept private so the refusal reaches the callers
+   * that ask before acting — reading an image file off disk is refused with
+   * its own clear message instead of attaching a picture this model will
+   * never see, and a selector stops offering it.
+   */
+  private sendableInput(provider: string, model: string, declared: Model<Api>['input']): Model<Api>['input'][number][] {
+    const input = [...declared]
+    if (!this.imageRefusals.has(routeKey(provider, model))) return input
+    return input.filter(modality => modality !== 'image')
+  }
+
   override providerInfo(provider: string): LlmProviderInfo {
     // The configured name, not the route key: `displayName` exists so a
     // deployment can label a route, and a label only the configuration surface
@@ -274,7 +321,7 @@ export class PiAiAdapter extends LlmAdapter {
         provider,
         id: model.id,
         name: model.name,
-        inputModalities: [...model.input],
+        inputModalities: this.sendableInput(provider, model.id, model.input),
       }))
     })
   }
@@ -296,7 +343,7 @@ export class PiAiAdapter extends LlmAdapter {
         provider,
         id: model,
         name: resolvedModel.name,
-        inputModalities: [...resolvedModel.input],
+        inputModalities: this.sendableInput(provider, model, resolvedModel.input),
         context: { contextWindow: resolvedModel.contextWindow },
         ...configuredMaxTokens === undefined ? {} : { defaultMaxTokens: configuredMaxTokens },
         ...reasoningInfo(resolvedModel, defaultLevel),
@@ -304,10 +351,101 @@ export class PiAiAdapter extends LlmAdapter {
     })
   }
 
+  /**
+   * One assistant turn, recovering from an endpoint that will not take the
+   * images the turn carries.
+   *
+   * A conversation outlives the model it started on. An image read under a
+   * model with eyes stays in the transcript and is replayed on every later
+   * turn, so a switch to a text-only model does not fail one read — it fails
+   * every message from then on, permanently, for a picture nobody is asking
+   * about any more. The endpoint's refusal is therefore treated as an answer
+   * about the model rather than as the turn's verdict: the images come out,
+   * the turn goes again, and the route is remembered so the next turn sends
+   * none.
+   *
+   * Only a refusal that arrives before any chunk has reached the caller is
+   * recovered. Past that point part of the answer has been delivered, and a
+   * second attempt would replay it.
+   */
   async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     if (options.stop !== undefined) {
       throw new LlmError('llm-pi-ai does not support GenerateOptions.stop', 'UNSUPPORTED_OPTION')
     }
+    const key = routeKey(options.provider, options.model)
+    const carriesImage = options.messages.some(message => contentHasImage(message.content))
+    const withoutImages = (): GenerateOptions['messages'] =>
+      options.messages.map(message => ({ ...message, content: contentWithoutImages(message.content) }))
+
+    let messages = carriesImage && this.imageRefusals.has(key) ? withoutImages() : options.messages
+    // A turn already stripped has nothing left to retry with.
+    let mayRetry = carriesImage && messages === options.messages
+    let delivered = false
+    let refused: LlmFailure | undefined
+
+    for (;;) {
+      let refusal: LlmFailure | undefined
+      // An attempt reports usage before it reports a refusal, and reports it
+      // as zeros when the request never reached the model. Passing that on
+      // would both count the turn as answered — stranding the retry — and
+      // bill a retried turn twice, so it waits here until the attempt either
+      // produces content or is abandoned.
+      const held: StreamChunk[] = []
+      for await (const chunk of this.streamAttempt(options, messages)) {
+        if (!delivered && mayRetry) {
+          refusal = imageRefusalOf(chunk)
+          if (refusal !== undefined) break
+        }
+        if (!delivered && chunk.type === 'usage') {
+          held.push(chunk)
+          continue
+        }
+        if (refused !== undefined && chunk.type === 'finish' && chunk.reason.kind === 'error') {
+          // The retry failed too. The refusal that caused it is what the
+          // caller needs, and the second failure is why the recovery did not
+          // land — reporting either one alone hides the other.
+          yield* held.splice(0)
+          yield {
+            ...chunk,
+            reason: {
+              kind: 'error',
+              failure: {
+                ...refused,
+                message: `${refused.message} (retried without images, which also failed: ${chunk.reason.failure.message})`,
+              },
+            },
+          }
+          return
+        }
+        yield* held.splice(0)
+        // Only content counts as an answer begun; a terminal chunk does not
+        // make a later attempt unsafe, it ends this one.
+        if (chunk.type !== 'finish') delivered = true
+        yield chunk
+      }
+      if (refusal === undefined) {
+        yield* held.splice(0)
+        return
+      }
+      this.imageRefusals.add(key)
+      refused = refusal
+      messages = withoutImages()
+      mayRetry = false
+    }
+  }
+
+  /**
+   * One request to the endpoint, carrying exactly the messages it is handed.
+   *
+   * Separate from {@link stream} so a turn the endpoint refused for naming an
+   * image can be sent a second time without it. Each attempt builds its own
+   * abort controller and idle watchdog: a retry that inherited the first
+   * attempt's would start out already aborted.
+   */
+  private async * streamAttempt(
+    options: GenerateOptions,
+    messages: GenerateOptions['messages'],
+  ): AsyncIterable<StreamChunk> {
     // One capture per stream call, taken before any await: the profile, the
     // model descriptor, and the collection all come from the same immutable
     // snapshot, and the credential freezes with them. A configuration change
@@ -330,7 +468,7 @@ export class PiAiAdapter extends LlmAdapter {
     using watchdog = idleWatchdog(upstream, streamIdleTimeoutMs, 'LLM_STREAM_IDLE_TIMEOUT')
 
     try {
-      const containsImage = options.messages.some(message => contentHasImage(message.content))
+      const containsImage = messages.some(message => contentHasImage(message.content))
       if (containsImage && !model.input.includes('image')) {
         throw new LlmError(`pi-ai model "${model.id}" does not support image input`, 'UNSUPPORTED_CONTENT')
       }
@@ -338,9 +476,10 @@ export class PiAiAdapter extends LlmAdapter {
       if (containsImage && attachments === undefined) {
         throw new LlmError('pi-ai image input requires the durable attachment service', 'UNSUPPORTED_CONTENT')
       }
+      const sending = messages === options.messages ? options : { ...options, messages }
       const context = attachments === undefined
-        ? toPiContext(options)
-        : await toPiContext(options, attachments)
+        ? toPiContext(sending)
+        : await toPiContext(sending, attachments)
       const events = snapshot.models.streamSimple(model, context, {
         ...profileOptions(profile, reasoning, apiKey),
         ...options.temperature === undefined ? {} : { temperature: options.temperature },

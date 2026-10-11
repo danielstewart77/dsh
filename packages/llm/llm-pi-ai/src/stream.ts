@@ -28,6 +28,36 @@ export function mapUsage(usage: PiUsage): TokenUsage {
   }
 }
 
+/**
+ * An endpoint refusing a request because the model takes no image input.
+ *
+ * The endpoint is the only party that knows. A gateway route serves whatever
+ * model a request names, so nothing on this side can hold a current list of
+ * which of them have eyes — and a list that went stale would either refuse an
+ * image a vision model serves perfectly or send one to a model that cannot
+ * read it. The refusal itself is the answer, always current and needing no
+ * configuration, so it is read rather than merely reported.
+ *
+ * Both halves are required: a subject naming images and a phrase refusing
+ * them. Matching the subject alone would read "image attachment too large" as
+ * a capability refusal and strip the images from a turn whose images were
+ * fine. Over-matching costs one wasted round trip and then surfaces the
+ * original failure, so the bias is toward the narrower read.
+ * @param message - the endpoint's flattened error text.
+ * @returns whether the text refuses the request for naming an image.
+ */
+export function isImageInputRefusal(message: string): boolean {
+  const subject = /\bimages?\b|\bimage_url\b|\bvision\b|\bmultimodal\b/i
+  const denial = /(?:does\s+not|doesn't|do\s+not|don't|cannot|can't|is\s+not|are\s+not)/
+  const verb = /(?:support|accept|allow|handle)s?/
+  const refusal = new RegExp(
+    `\\b${denial.source}\\s+(?:currently\\s+)?${verb.source}\\b`
+    + '|\\bunsupported\\b|\\bnot\\s+supported\\b|\\bno\\s+support\\b',
+    'i',
+  )
+  return subject.test(message) && refusal.test(message)
+}
+
 // XXX(pi-ai upstream): pi-ai flattens the caught error to `error.message`
 // (api/anthropic-messages.js: `errorMessage = error instanceof Error ?
 // error.message : JSON.stringify(error)`), discarding the original Error and its

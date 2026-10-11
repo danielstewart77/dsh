@@ -7,7 +7,8 @@ import type {
   SaveImageAttachment,
   StoredImageAttachment,
 } from '@deepseek-ai/dsh-attachment'
-import LlmRuntime, { createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
+import LlmRuntime, { CallId, createUserMessage, CONTEXT_WINDOW_EXCEEDED_CODE, IMAGE_OMITTED_TEXT, LlmError, ReasoningEffortId, userAgent } from '@deepseek-ai/dsh-llm'
+import type { GenerateOptions, LlmFailure, StreamChunk } from '@deepseek-ai/dsh-llm'
 import * as LlmPiAi from '@deepseek-ai/dsh-llm-pi-ai'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
@@ -985,5 +986,238 @@ describe('a gateway route that lists no models', () => {
     })
     expect(result.finish).toEqual({ kind: 'stop' })
     expect(server.requests[0]).toMatchObject({ model: 'gpt-6-sol', reasoning_effort: 'high' })
+  })
+})
+
+describe('an endpoint that will not take the images a turn carries', () => {
+  /** What the hive inference proxy answers a text-only model with, verbatim. */
+  const PROXY_REFUSAL_TEXT = 'this model does not support image input (ref: 4324a6e9-a191-4bc3-b1af-8ce03a8b8323)'
+
+  /** That refusal in the error envelope an OpenAI-compatible endpoint returns. */
+  const REFUSAL_BODY = JSON.stringify({
+    error: { message: PROXY_REFUSAL_TEXT, type: 'invalid_request_error' },
+  })
+
+  const attachments = {
+    readImage: () => Promise.resolve({ ref: IMAGE_REF, data: Uint8Array.of(1) }),
+  } as unknown as AttachmentStore
+
+  /** An open gateway route, as a hive mind's own profile declares one. */
+  function openRouteAdapter(baseURL: string): PiAiAdapter {
+    return new PiAiAdapter({
+      profiles: () => resolveProfiles({
+        'hive-proxy': {
+          api: 'openai-completions',
+          apiKeyEnv: 'PI_TEST_KEY',
+          baseURL,
+          models: [],
+          defaultInput: ['text', 'image'],
+          defaultContextWindow: 128_000,
+        },
+      }),
+      resolveApiKey: () => Promise.resolve('test-key'),
+      resolveAttachments: () => attachments,
+    })
+  }
+
+  /** A turn whose history holds a screenshot a tool read, beside its envelope. */
+  function turnCarryingAScreenshot(): GenerateOptions['messages'] {
+    return [createUserMessage({
+      content: [{
+        type: 'tool-result',
+        toolCallId: CallId('call-read-image'),
+        content: [
+          { type: 'text', text: '<path>/tmp/nav_issue.png</path>\nimage/png image, 1400x1000 px, 79117 bytes' },
+          { type: 'image', attachment: IMAGE_REF },
+        ],
+      }],
+      source: { kind: 'plugin', plugin: 'test' },
+    })]
+  }
+
+  async function collect(stream: AsyncIterable<StreamChunk>): Promise<StreamChunk[]> {
+    const chunks: StreamChunk[] = []
+    for await (const chunk of stream) chunks.push(chunk)
+    return chunks
+  }
+
+  const textOf = (chunks: StreamChunk[]): string => chunks
+    .filter((chunk): chunk is Extract<StreamChunk, { type: 'text-delta' }> => chunk.type === 'text-delta')
+    .map(chunk => chunk.text)
+    .join('')
+
+  const failureOf = (chunks: StreamChunk[]): LlmFailure | undefined => {
+    const finish = chunks.find((chunk): chunk is Extract<StreamChunk, { type: 'finish' }> => chunk.type === 'finish')
+    return finish?.reason.kind === 'error' ? finish.reason.failure : undefined
+  }
+
+  /** Images on the wire: this API carries each as an `image_url` part. */
+  const imagesIn = (body: unknown): number =>
+    JSON.stringify(body).split('"type":"image_url"').length - 1
+
+  it('sends the turn again without its images and completes', async () => {
+    const server = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { events: textEvents },
+    ])
+    const adapter = openRouteAdapter(server.url)
+
+    const chunks = await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    expect(textOf(chunks)).toBe('hello')
+    expect(failureOf(chunks)).toBeUndefined()
+    expect(server.requests).toHaveLength(2)
+    expect(imagesIn(server.requests[0])).toBe(1)
+    expect(imagesIn(server.requests[1])).toBe(0)
+  })
+
+  it('keeps the text that sat beside the image it stripped', async () => {
+    const server = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { events: textEvents },
+    ])
+    const adapter = openRouteAdapter(server.url)
+
+    await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    expect(JSON.stringify(server.requests[1])).toContain('1400x1000 px, 79117 bytes')
+  })
+
+  it('stops sending images to a model that has refused them once', async () => {
+    const server = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { events: textEvents },
+      { events: textEvents },
+    ])
+    const adapter = openRouteAdapter(server.url)
+    const turn = {
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }
+
+    await collect(adapter.stream(turn))
+    const second = await collect(adapter.stream(turn))
+
+    expect(textOf(second)).toBe('hello')
+    // The second turn costs one request, not another refusal and retry.
+    expect(server.requests).toHaveLength(3)
+    expect(imagesIn(server.requests[2])).toBe(0)
+  })
+
+  it('reports no image modality for a model that has refused images', async () => {
+    const server = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { events: textEvents },
+    ])
+    const adapter = openRouteAdapter(server.url)
+
+    const before = await adapter.resolveModel('hive-proxy', 'gpt-oss:120b-cloud')
+    expect(before.inputModalities).toContain('image')
+
+    await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    const after = await adapter.resolveModel('hive-proxy', 'gpt-oss:120b-cloud')
+    expect(after.inputModalities).not.toContain('image')
+    expect(after.inputModalities).toContain('text')
+  })
+
+  it('surfaces the original refusal when the retry fails too', async () => {
+    const server = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { status: 500, body: JSON.stringify({ error: { message: 'upstream exploded' } }) },
+    ])
+    const adapter = openRouteAdapter(server.url)
+
+    const chunks = await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    const failure = failureOf(chunks)
+    expect(failure?.message).toContain('does not support image input')
+    expect(failure?.message).toContain('upstream exploded')
+  })
+
+  it('does not retry a refusal that arrives after part of the answer', async () => {
+    const server = await mockServer([{
+      events: [
+        '{"choices":[{"delta":{"role":"assistant","content":""},"index":0,"finish_reason":null}]}',
+        '{"choices":[{"delta":{"content":"partial"},"index":0,"finish_reason":null}]}',
+        `{"error":{"message":${JSON.stringify(PROXY_REFUSAL_TEXT)}}}`,
+        '[DONE]',
+      ],
+    }])
+    const adapter = openRouteAdapter(server.url)
+
+    const chunks = await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    expect(textOf(chunks)).toContain('partial')
+    expect(server.requests).toHaveLength(1)
+  })
+
+  it('leaves a body in a tool result the strip would have emptied', async () => {
+    const server = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { events: textEvents },
+    ])
+    const adapter = openRouteAdapter(server.url)
+
+    const chunks = await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: [createUserMessage({
+        content: [{
+          type: 'tool-result',
+          toolCallId: CallId('call-image-only'),
+          content: [{ type: 'image', attachment: IMAGE_REF }],
+        }],
+        source: { kind: 'plugin', plugin: 'test' },
+      })],
+    }))
+
+    expect(textOf(chunks)).toBe('hello')
+    expect(imagesIn(server.requests[1])).toBe(0)
+    expect(JSON.stringify(server.requests[1])).toContain(IMAGE_OMITTED_TEXT)
+  })
+
+  it('strips nothing for a 400 that is not the model refusing an image', async () => {
+    // Each of these carries one half of a capability refusal and not the
+    // other: a refusal of something that is not an image, and an image
+    // complaint that is not a refusal. Acting on half would strip the images
+    // out of a turn whose images were never the problem.
+    const notAnImageRefusal = 'this model does not support tool use'
+    const notARefusal = 'image attachment exceeds the 20 MB limit'
+    for (const message of [notAnImageRefusal, notARefusal]) {
+      const server = await mockServer([{ status: 400, body: JSON.stringify({ error: { message } }) }])
+      const adapter = openRouteAdapter(server.url)
+
+      const chunks = await collect(adapter.stream({
+        provider: 'hive-proxy',
+        model: 'gpt-oss:120b-cloud',
+        messages: turnCarryingAScreenshot(),
+      }))
+
+      expect(failureOf(chunks)?.message).toContain(message)
+      expect(server.requests).toHaveLength(1)
+      expect(imagesIn(server.requests[0])).toBe(1)
+    }
   })
 })
