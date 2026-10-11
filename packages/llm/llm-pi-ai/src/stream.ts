@@ -28,6 +28,76 @@ export function mapUsage(usage: PiUsage): TokenUsage {
   }
 }
 
+/**
+ * Wordings in which an endpoint says the model itself takes no image input.
+ *
+ * The subject has to sit inside the refusing clause, not merely somewhere in
+ * the message. "model gpt-4-vision-preview does not support tool use" names a
+ * vision model and refuses something else; "content filter does not allow
+ * this image" refuses this one image and says nothing about the model. Each
+ * alternative below is a wording a real endpoint returns.
+ */
+const IMAGE_INPUT_REFUSALS: readonly RegExp[] = [
+  // "this model does not support image input", "cannot accept images"
+  new RegExp(
+    "(?:does\\s+not|doesn't|do\\s+not|don't|cannot|can't|is\\s+not|are\\s+not)"
+    + '\\s+(?:currently\\s+)?(?:support|accept|allow|handle)s?\\s+'
+    + '(?:\\w+\\s+){0,2}(?:images?|image_url|vision|multi-?modal)\\b',
+    'i',
+  ),
+  // "image input is not supported", "multi-modal inputs are not supported"
+  /\b(?:images?|image_url|vision|multi-?modal)\b(?:\s+\w+){0,3}\s+(?:is|are)\s+not\s+(?:supported|accepted|allowed)\b/i,
+  // OpenAI: "Invalid content type. image_url is only supported by certain models."
+  /\b(?:images?|image_url)\b(?:\s+\w+){0,3}\s+(?:is|are)\s+only\s+supported\b/i,
+  // OpenRouter: "No endpoints found that support image input"
+  /\bno\s+(?:endpoints?|models?|deployments?)\b.*\b(?:images?|vision|multi-?modal)\b/i,
+  // "model 'x' has no vision capability", "no image support"
+  /\bno\s+(?:images?|vision|multi-?modal)\s+(?:support|capability|capabilities)\b/i,
+  // LiteLLM: "Model qwen3 is not multimodal"
+  /\bis\s+not\s+multi-?modal\b/i,
+  // Mistral: "Invalid model for image input"
+  /\binvalid\s+model\b.*\b(?:images?|vision|multi-?modal)\b/i,
+]
+
+/**
+ * Complaints about a particular image rather than about the model's capacity
+ * for any image. Stripping on one of these discards pictures that were fine,
+ * and — far worse — teaches this process that a model with eyes has none.
+ */
+const IMAGE_CONTENT_COMPLAINTS: readonly RegExp[] = [
+  /\bimage\/[a-z0-9.+-]+/i,
+  /\b\d+\s*x\s*\d+\b/,
+  /\b(?:format|formats|mime|media\s+type|resolution|dimensions?|pixels?)\b/i,
+  // A message naming concrete encodings is answering "which image", not
+  // "whether images": "use JPEG or PNG" is advice about this file.
+  /\b(?:jpe?g|png|gif|webp|avif|tiff?|bmp|heic|heif|svg)\b/i,
+  /\b(?:too\s+large|exceeds?|limit|maximum|max|size|bytes|[kmg]b)\b/i,
+  /\b(?:filter|moderation|nsfw|safety|policy|rejected|corrupt|decode|malformed|invalid\s+value)\b/i,
+  /\bper\s+request\b/i,
+]
+
+/**
+ * An endpoint refusing a request because the model takes no image input.
+ *
+ * The endpoint is the only party that knows. A gateway route serves whatever
+ * model a request names, so nothing on this side can hold a current list of
+ * which of them have eyes — and a list that went stale would either refuse an
+ * image a vision model serves perfectly or send one to a model that cannot
+ * read it. The refusal itself is the answer, always current and needing no
+ * configuration, so it is read rather than merely reported.
+ *
+ * A match is not taken as proof: it causes one attempt without the images,
+ * and only that attempt answering is treated as evidence about the model. So a
+ * wording this misreads costs a round trip, and a wording it misses leaves the
+ * turn exactly as it would have been.
+ * @param message - the endpoint's flattened error text.
+ * @returns whether the text says this model accepts no image input.
+ */
+export function isImageInputRefusal(message: string): boolean {
+  if (IMAGE_CONTENT_COMPLAINTS.some(pattern => pattern.test(message))) return false
+  return IMAGE_INPUT_REFUSALS.some(pattern => pattern.test(message))
+}
+
 // XXX(pi-ai upstream): pi-ai flattens the caught error to `error.message`
 // (api/anthropic-messages.js: `errorMessage = error instanceof Error ?
 // error.message : JSON.stringify(error)`), discarding the original Error and its
