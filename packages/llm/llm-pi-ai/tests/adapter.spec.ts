@@ -1025,6 +1025,9 @@ describe('an endpoint that will not take the images a turn carries', () => {
     /** Replace the configuration, as a settings edit does. */
     reconfigure: (next: Record<string, LlmPiAi.PiAiProviderProfile>) => void
     keyResolutions: () => number
+    profileResolutions: () => number
+    /** Arrange for a settings edit to land right after the route is resolved. */
+    reconfigureAfterFirstResolution: (next: Record<string, LlmPiAi.PiAiProviderProfile>) => void
   }
 
   /**
@@ -1040,8 +1043,21 @@ describe('an endpoint that will not take the images a turn carries', () => {
     let raw = openRoute(baseURL, overrides)
     let memoized = resolveProfiles(raw)
     let keyResolutions = 0
+    let profileResolutions = 0
+    let swapAfterFirstResolution: Record<string, LlmPiAi.PiAiProviderProfile> | undefined
     const adapter = new PiAiAdapter({
-      profiles: () => memoized,
+      profiles: () => {
+        profileResolutions += 1
+        const current = memoized
+        if (swapAfterFirstResolution !== undefined) {
+          // A settings edit landing the instant after this call resolved its
+          // route: a second resolution would see it, a frozen one cannot.
+          raw = swapAfterFirstResolution
+          memoized = resolveProfiles(raw)
+          swapAfterFirstResolution = undefined
+        }
+        return current
+      },
       resolveApiKey: () => {
         keyResolutions += 1
         return Promise.resolve('test-key')
@@ -1055,6 +1071,8 @@ describe('an endpoint that will not take the images a turn carries', () => {
         memoized = resolveProfiles(raw)
       },
       keyResolutions: () => keyResolutions,
+      profileResolutions: () => profileResolutions,
+      reconfigureAfterFirstResolution: (next) => { swapAfterFirstResolution = next },
     }
   }
 
@@ -1107,7 +1125,7 @@ describe('an endpoint that will not take the images a turn carries', () => {
     }))
 
     expect(textOf(chunks)).toBe('hello')
-    expect(failureOf(chunks)).toBeUndefined()
+    expect(chunks.at(-1)).toMatchObject({ type: 'finish', reason: { kind: 'stop' } })
     expect(server.requests).toHaveLength(2)
     expect(imagesIn(server.requests[0])).toBe(1)
     expect(imagesIn(server.requests[1])).toBe(0)
@@ -1127,6 +1145,7 @@ describe('an endpoint that will not take the images a turn carries', () => {
     }))
 
     expect(JSON.stringify(server.requests[1])).toContain('1400x1000 px, 79117 bytes')
+    expect(imagesIn(server.requests[1])).toBe(0)
   })
 
   it('stops sending images to a model that has refused them once', async () => {
@@ -1374,6 +1393,103 @@ describe('an endpoint that will not take the images a turn carries', () => {
     expect(route.keyResolutions()).toBe(1)
   })
 
+  it('blinds only the model that refused, not every model on the route', async () => {
+    // A gateway route serves many models. Keying the learned fact by route
+    // alone would let one text-only model's refusal take the eyes off every
+    // vision model behind the same endpoint.
+    const server = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { events: textEvents },
+    ])
+    const { adapter } = openRouteAdapter(server.url)
+
+    await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    expect((await adapter.resolveModel('hive-proxy', 'gpt-oss:120b-cloud')).inputModalities)
+      .not.toContain('image')
+    expect((await adapter.resolveModel('hive-proxy', 'qwen3-vl:32b')).inputModalities)
+      .toContain('image')
+  })
+
+  it('places the note only where the strip left nothing', async () => {
+    // The note stands in for a body the strip emptied. Attaching one wherever
+    // an image was would make it a running commentary on a transcript, and
+    // would make the guard it exists for dead code.
+    const server = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { events: textEvents },
+    ])
+    const { adapter } = openRouteAdapter(server.url)
+
+    await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      // This tool result keeps its envelope, so nothing was emptied.
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    expect(imagesIn(server.requests[1])).toBe(0)
+    expect(JSON.stringify(server.requests[1])).not.toContain(IMAGE_OMITTED_TEXT)
+  })
+
+  it('sends the retry to the endpoint the call started on', async () => {
+    // Both attempts belong to one request. A settings edit landing in the gap
+    // must not move the second attempt onto a different endpoint, credential
+    // or model descriptor than the first.
+    const first = await mockServer([
+      { status: 400, body: REFUSAL_BODY },
+      { events: textEvents },
+    ])
+    const second = await mockServer([{ events: textEvents }])
+    const route = openRouteAdapter(first.url)
+    route.reconfigureAfterFirstResolution(openRoute(second.url))
+
+    // The edit lands after this call resolved `first`. Its retry belongs to
+    // the same request and must stay on the endpoint it started on.
+    await collect(route.adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    expect(first.requests).toHaveLength(2)
+    expect(second.requests).toHaveLength(0)
+    expect(route.profileResolutions()).toBe(1)
+  })
+
+  it('still reports tokens a refused attempt really cost', async () => {
+    // An endpoint that reads the prompt and then refuses has billed for it.
+    // Dropping that reading with the attempt bills the caller nothing for
+    // work that was paid for.
+    const server = await mockServer([
+      {
+        events: [
+          '{"choices":[{"delta":{},"index":0,"finish_reason":null}],"usage":{"prompt_tokens":120,"completion_tokens":0}}',
+          `{"error":{"message":${JSON.stringify(PROXY_REFUSAL_TEXT)}}}`,
+          '[DONE]',
+        ],
+      },
+      { events: textEvents },
+    ])
+    const { adapter } = openRouteAdapter(server.url)
+
+    const chunks = await collect(adapter.stream({
+      provider: 'hive-proxy',
+      model: 'gpt-oss:120b-cloud',
+      messages: turnCarryingAScreenshot(),
+    }))
+
+    expect(textOf(chunks)).toBe('hello')
+    const inputTokens = chunks
+      .filter((chunk): chunk is Extract<StreamChunk, { type: 'usage' }> => chunk.type === 'usage')
+      .map(chunk => chunk.usage.inputTokens)
+    expect(inputTokens).toContain(120)
+  })
+
   it('strips nothing for a 400 that is not the model refusing an image', async () => {
     // Each of these carries one half of a capability refusal and not the
     // other: a refusal of something that is not an image, and an image
@@ -1434,6 +1550,17 @@ describe('reading an endpoint refusal as a statement about the model', () => {
       'image attachment exceeds the 20 MB limit',
       'this model does not support tool use',
       'temperature must be between 0 and 2',
+      // Each of these says a refusal about images in so many words, and is
+      // still a complaint about one picture. Without the exclusions they read
+      // as the model having no eyes, and a vision model loses them for good.
+      // A media type this does not otherwise name: only the type itself says
+      // this is about one picture.
+      'images are not supported in image/x-icon',
+      'images are not supported above 2048x2048',
+      'images are not supported in this format',
+      'images are not supported beyond the 20 MB maximum',
+      'images are not supported by the content filter',
+      'images are not supported more than 4 per request',
     ]
 
     expect(saysTheModelTakesNoImages.filter(text => !isImageInputRefusal(text))).toEqual([])
@@ -1450,6 +1577,11 @@ describe('what counts as part of an answer already delivered', () => {
     expect(carriesContent({ type: 'block-start', index: 0, blockType: 'text' })).toBe(false)
     expect(carriesContent({ type: 'usage', usage: { inputTokens: 1, outputTokens: 0 } })).toBe(false)
     expect(carriesContent({ type: 'finish', reason: { kind: 'stop' } })).toBe(false)
+
+    // An endpoint that opens with an empty delta and then refuses has begun
+    // nothing: the same event as an opened block, under another name.
+    expect(carriesContent({ type: 'text-delta', index: 0, text: '' })).toBe(false)
+    expect(carriesContent({ type: 'reasoning-delta', index: 0, text: '' })).toBe(false)
 
     expect(carriesContent({ type: 'text-delta', index: 0, text: 'a' })).toBe(true)
     expect(carriesContent({ type: 'reasoning-delta', index: 0, text: 'a' })).toBe(true)

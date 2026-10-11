@@ -75,11 +75,12 @@ interface ResolvedRoute {
 export function carriesContent(chunk: StreamChunk): boolean {
   // `block-start` is deliberately absent: the anthropic wire opens a text
   // block with an empty string before a single character exists, so treating
-  // it as delivery would forfeit the recovery on that route entirely.
-  return chunk.type === 'text-delta'
-    || chunk.type === 'reasoning-delta'
-    || chunk.type === 'tool-call-delta'
-    || chunk.type === 'block-end'
+  // it as delivery would forfeit the recovery on that route entirely. An
+  // empty delta is the same event by another name — an endpoint that opens
+  // with `delta.content: ""` and then refuses must not be read as having
+  // begun an answer.
+  if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta') return chunk.text.length > 0
+  return chunk.type === 'tool-call-delta' || chunk.type === 'block-end'
 }
 
 /** Whether a usage reading accounts for anything. */
