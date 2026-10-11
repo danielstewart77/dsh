@@ -1840,6 +1840,12 @@ export const SERVICE_API: readonly ServiceApiEntry[] = [
     description: 'Replay owner for one service-wide estimator and isolated per-session folds.',
     methods: [
       {
+        signature: 'measureTurn(session: Session, turn: number): ContextMeasured',
+        description: 'The conversation\'s size at a turn\'s close, labelled by where the figure came from.\n\nThe provider\'s count stands only when it is for the turn\'s own final call: that call\'s input, cache reads and writes and output, with nothing added to the conversation since. A call the provider counted as zero input, a turn whose last call failed, or one that went on adding tool results is the meter\'s estimate instead — the last trusted count plus the price of what came after. A log that cannot be measured reports `none` rather than a guess.',
+        parameters: [{ name: 'session', description: 'the conversation the turn ran in.' }, { name: 'turn', description: 'the turn being closed.' }],
+        returns: 'the measurement to record.',
+      },
+      {
         signature: 'measure(session: Session, requestHeader?: EpochHeader): TokenMeasurement',
         description: 'Measure current request pressure and surface through the durable tail.\n\nProvider usage is reused only when the latest successful call\'s canonical request envelope matches `requestHeader` and its total is no lower than that call\'s full heuristic anchor; otherwise the complete envelope and surface are heuristically repriced.\n\n`requestHeader` affects request pressure only; surface fields always describe the current session surface. Every call clones those positional nodes, so measurement is O(surface).',
         parameters: [{ name: 'session', description: 'session to replay through its current durable tail.' }, { name: 'requestHeader', description: 'optional effective request envelope replacing the latest logged header.' }],
@@ -2264,10 +2270,10 @@ export const EVENT_API: readonly EventApiEntry[] = [
   {
     name: 'agent/turn-stopping',
     mode: 'serial',
-    signature: '\'agent/turn-stopping\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; signal: AbortSignal }): Promise<void> | void',
+    signature: '\'agent/turn-stopping\'(this: Scoped<Agent>, payload: { agent: Agent; turn: number; signal: AbortSignal; failure?: LlmFailure }): Promise<void> | void',
     summary: 'The turn is about to close: the model owes no response (no live tool calls, no fresh steering).',
-    description: 'The turn is about to close: the model owes no response (no live tool calls, no fresh steering). Awaited before the boundary commits — a listener that objects steers (`agent.steer(...)`) and the machine re-reads its inbox: fresh steering runs another step, none closes the turn. Data decides, so listener order cannot change the outcome. The inverse control (stop a tool loop early) is data too: a tool result carrying `concludesTurn` ends the turn at its step. The conclusion never short-circuits already-submitted next-step work: same-step `additionalContexts` or racing steering still runs, and the turn closes only when that inbox drains.',
-    parameters: [{ name: 'payload', description: '.signal - the current turn\'s explicit abort signal. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
+    description: 'The turn is about to close: the model owes no response (no live tool calls, no fresh steering). Awaited before the boundary commits — a listener that objects steers (`agent.steer(...)`) and the machine re-reads its inbox: fresh steering runs another step, none closes the turn. Data decides, so listener order cannot change the outcome. The inverse control (stop a tool loop early) is data too: a tool result carrying `concludesTurn` ends the turn at its step. The conclusion never short-circuits already-submitted next-step work: same-step `additionalContexts` or racing steering still runs, and the turn closes only when that inbox drains.\n\nA turn that fails reaches this boundary too, carrying its `failure`, because what a listener does here — measure the conversation, decide it has outgrown its model — matters most on the turn that hit the ceiling. A failed turn closes whatever its listeners do: steering offered then waits for the next turn rather than continuing this one. A cancelled turn does not arrive here.',
+    parameters: [{ name: 'payload', description: '.failure - present only when the turn is closing on an error: its structured facts. Scope-filtered dispatch (`@deepseek-ai/dsh-scope`): agent-scoped listeners receive only that agent.' }],
   },
   {
     name: 'approval/request',
@@ -2840,6 +2846,14 @@ export const TYPE_API: readonly TypeApiEntry[] = [
   {
     name: 'ContextFormed',
     declaration: 'export type ContextFormed = {\n    readonly form?: never;\n} | {\n    readonly form: \'instructions\';\n} | {\n    readonly form: \'catalog\';\n} | {\n    readonly form: \'snapshot\';\n    readonly sections: readonly ContextSnapshotSection[];\n} | {\n    readonly form: \'notice\';\n    readonly summary: string;\n} | {\n    readonly form: \'relay\';\n} | {\n    readonly form: \'recall\';\n};',
+  },
+  {
+    name: 'ContextMeasured',
+    declaration: 'export interface ContextMeasured {\n    readonly turn: number;\n    readonly model: string | null;\n    readonly tokens: number;\n    readonly kind: ContextMeasurementKind;\n    readonly window: number | null;\n}',
+  },
+  {
+    name: 'ContextMeasurementKind',
+    declaration: 'export type ContextMeasurementKind = \'usage\' | \'estimated\' | \'none\';',
   },
   {
     name: 'ContextSnapshotSection',

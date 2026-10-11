@@ -17,9 +17,10 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { ContentBlock, LlmFailure, MessageSource } from '@deepseek-ai/dsh-llm'
+import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
+import type {} from '@deepseek-ai/dsh-token-meter'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
   appendHookInvoked,
@@ -257,10 +258,11 @@ export function apply(ctx: Context, config: Config): void {
   // TODO(stop-loop-guard): Codex supplies `stop_hook_active` so a Stop hook can
   // avoid continuing the same turn indefinitely. It is always false here, so an
   // unconditionally blocking hook force-continues every step until it self-limits.
-  ctx.on('agent/turn-stopping', async ({ agent, turn, signal }): Promise<void> => {
-    const merged = await runPoint('Stop', '', { ...turnBase(ctx, agent, 'Stop', model), stop_hook_active: false, last_assistant_message: null }, { agent, turn, signal })
+  // A failed turn runs its Stop hooks too, but closes whatever they decide.
+  ctx.on('agent/turn-stopping', async ({ agent, turn, signal, failure }): Promise<void> => {
+    const merged = await runPoint('Stop', '', stopPayload(ctx, agent, model, turn, failure), { agent, turn, signal })
     /* jscpd:ignore-end */
-    if (merged.decision === 'deny') {
+    if (merged.decision === 'deny' && failure === undefined) {
       // A blocking Stop hook forces continuation; a block with no reason (exit 2,
       // empty stderr) still forces it — fall back to a generic steering line
       // rather than letting the turn stop.
@@ -305,6 +307,26 @@ function base(ctx: Context, agent: Agent | undefined, event: string, model: stri
 /** Base + turn_id, for the turn-scoped events (PreToolUse/PostToolUse/UserPromptSubmit/Stop). */
 function turnBase(ctx: Context, agent: Agent | undefined, event: string, model: string): Record<string, unknown> {
   return { ...base(ctx, agent, event, model), turn_id: String(lastTurn(agent)) }
+}
+
+/**
+ * Build a Stop payload: Codex's fields, plus this harness's own `context` (the
+ * size the token meter recorded at this turn's close) and, for a turn that
+ * failed, `stop_reason: "error"` with its `error_code`.
+ */
+function stopPayload(ctx: Context, agent: Agent, model: string, turn: number, failure: LlmFailure | undefined): Record<string, unknown> {
+  const measured = agent.session.events.findLast(
+    (event): event is SessionEvent<'context/measured'> => event.type === 'context/measured' && event.data.turn === turn,
+  )
+  return {
+    ...turnBase(ctx, agent, 'Stop', model),
+    stop_hook_active: false,
+    last_assistant_message: null,
+    ...measured === undefined
+      ? {}
+      : { context: { model: measured.data.model, tokens: measured.data.tokens, kind: measured.data.kind, window: measured.data.window } },
+    ...failure === undefined ? {} : { stop_reason: 'error', error_code: failure.code },
+  }
 }
 
 /** Extract a `command` string from a tool call's parsed arguments, else ''. */

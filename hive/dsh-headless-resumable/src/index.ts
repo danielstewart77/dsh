@@ -33,6 +33,8 @@ import type { SessionEvent } from '@deepseek-ai/dsh-session'
 type TurnEndReason = SessionEvent<'turn/end'>['data']['reason']
 import type {} from '@deepseek-ai/cordis-plugin-loader'
 import type {} from '@deepseek-ai/dsh-cmdline'
+// Type-only: the `hook/result` event a Stop hook's rotation request rides on.
+import type {} from '@deepseek-ai/dsh-hook-protocol'
 
 import { escalatorFromEnv, harnessRefusal } from './escalate.ts'
 import { firstFailedCall, NO_TRAFFIC, toolTraffic } from './traffic.ts'
@@ -109,9 +111,12 @@ export interface TurnReport {
    * spelled out here, because the set is theirs to extend -- and `max-tokens`
    * in particular is the context ceiling, which is a measurement this loop
    * wants recorded rather than a failure to explain away. `unknown` is an
-   * interval holding no turn at all.
+   * interval holding no turn at all. `rotation_needed` is a goal run that a
+   * Stop hook ended because the conversation has outgrown its model: the
+   * rounds it did are done, and `goal` says what is left to carry onto a fresh
+   * conversation.
    */
-  outcome: TurnEndReason['kind'] | 'refused' | 'unknown'
+  outcome: TurnEndReason['kind'] | 'refused' | 'rotation_needed' | 'unknown'
   /** The last non-empty assistant text of this turn's interval. */
   text: string
   /** The tool traffic of this turn's interval. */
@@ -125,6 +130,12 @@ export interface TurnReport {
   turns: number
   /** The goal's durable phase when the process finished, when a goal was armed. */
   goalPhase?: string
+  /**
+   * What a run ended for rotation still owes: the objective to re-dispatch and
+   * how many of the rounds it was paying for it never started. Present only
+   * with `outcome: rotation_needed`.
+   */
+  goal?: { objective: string; roundsLeft: number }
   /** Present when something refused or failed: the code and message. */
   error?: { code: string; message: string }
 }
@@ -191,6 +202,7 @@ export interface GoalDriving {
   resume(agent: never, ref: { id: string; revision: number }): { phase: string }
   edit(agent: never, ref: { id: string; revision: number },
     request: { maxGoalRounds: number }): { id: string; revision: number }
+  disarm(agent: never): unknown
 }
 
 /** Whether a goal still entitles the driver to open another round. */
@@ -452,6 +464,21 @@ export async function run(
     const delta = streamDelta(event)
     if (delta !== undefined) reportDelta(io, delta)
   })
+  // A Stop hook asking for rotation ends the goal run after the round it closed.
+  // Disarmed the moment the request is recorded — inside the turn, before it
+  // closes — because the driver opens the next round at the idle that follows,
+  // and a check made after that idle would already have paid for one more round
+  // on a conversation known to be too big. The goal itself stays active: what
+  // is left of it is reported for whoever rotates the conversation, since the
+  // harness never rotates one by itself.
+  let rotationRequested = false
+  const stopWatchingRotation = goals === undefined
+    ? () => {}
+    : agent.ctx.on('session/event', (session, event) => {
+      if (session.id !== agent.session.id || !rotationRequestedBy(event)) return
+      rotationRequested = true
+      goals.disarm(agent as never)
+    })
   // Armed before the task is sent, so a failure in the opening turn stops the run
   // as readily as one in round thirty.
   const watch = config.stopOnFailedCall === true
@@ -488,6 +515,7 @@ export async function run(
     }
   } finally {
     watch?.stop()
+    stopWatchingRotation()
     // In a finally, and before the report is written. A rejection out of the
     // turn or the round loop that left this listener live would go on writing
     // deltas with no report behind them, and the adapter would print "exited
@@ -503,8 +531,13 @@ export async function run(
   const refusal = watch?.check()
   const { text, reason, turns } = summarize(agent.session.events, firstSeq)
   const traffic = toolTraffic(agent.session.events, firstSeq)
-  const outcome: TurnReport['outcome'] = reason?.kind ?? 'unknown'
   const finalGoal = goals?.get(agent as never)
+  const roundsLeft = finalGoal === undefined ? 0 : finalGoal.maxGoalRounds - finalGoal.roundsStarted
+  // A failed turn reports its failure: an overflow is rotated on by whoever
+  // reads it, and calling it a rotation request would lose the code that says so.
+  const rotation = rotationRequested && finalGoal !== undefined && finalGoal.phase === 'active'
+    && roundsLeft > 0 && refusal === undefined && reason !== undefined && reason.kind !== 'error'
+  const outcome: TurnReport['outcome'] = rotation ? 'rotation_needed' : reason?.kind ?? 'unknown'
   report(io, {
     sessionId: config.sessionId,
     mode: config.mode,
@@ -513,6 +546,7 @@ export async function run(
     traffic,
     turns,
     ...(finalGoal === undefined ? {} : { goalPhase: finalGoal.phase }),
+    ...(rotation && finalGoal !== undefined ? { goal: { objective: finalGoal.objective, roundsLeft } } : {}),
     ...(refusal === undefined
       ? reason?.kind === 'error'
         ? { error: { code: reason.error.code, message: reason.error.message } }
@@ -527,6 +561,16 @@ export async function run(
         },
       }),
   })
+}
+
+/**
+ * Whether one session event is a Stop hook asking for the conversation to be
+ * rotated — the hook bridge records the request on the hook's result.
+ * @param event - one published session event.
+ * @returns true for a Stop hook result carrying `rotate`.
+ */
+function rotationRequestedBy(event: SessionEvent): boolean {
+  return event.type === 'hook/result' && event.data.point === 'Stop' && event.data.rotate === true
 }
 
 /**

@@ -44,16 +44,24 @@
     "@deepseek-ai/dsh-agent-default-model": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
-    "@deepseek-ai/dsh-hooks-claude-code": "workspace:^"
+    "@deepseek-ai/dsh-hooks-claude-code": "workspace:^",
+    "@deepseek-ai/dsh-hook-protocol": "workspace:^"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "workspace:^",
+    "@deepseek-ai/dsh-agent-loop": "workspace:^",
+    "@deepseek-ai/dsh-agent-loop-testkit": "workspace:^",
+    "@deepseek-ai/dsh-bash-local": "workspace:^",
+    "@deepseek-ai/dsh-goal": "workspace:^",
+    "@deepseek-ai/dsh-goal-round-driver": "workspace:^",
+    "@deepseek-ai/dsh-subprocess-local": "workspace:^",
     "@deepseek-ai/cordis-plugin-loader": "workspace:^",
     "@deepseek-ai/dsh-agent": "workspace:^",
     "@deepseek-ai/dsh-agent-default-model": "workspace:^",
     "@deepseek-ai/dsh-llm": "workspace:^",
     "@deepseek-ai/dsh-session": "workspace:^",
-    "@deepseek-ai/dsh-hooks-claude-code": "workspace:^"
+    "@deepseek-ai/dsh-hooks-claude-code": "workspace:^",
+    "@deepseek-ai/dsh-hook-protocol": "workspace:^"
   },
   "files": [
     "lib/types/**/*.js",

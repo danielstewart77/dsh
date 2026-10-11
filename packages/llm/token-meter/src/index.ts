@@ -12,7 +12,10 @@ import type { EpochHeader, Session, SessionEvent } from '@deepseek-ai/dsh-sessio
 import { canonicalHeader, headerEquals, isSurfaceEvent } from '@deepseek-ai/dsh-session'
 // Type-only: resolves the optional projection registry Context declaration.
 import type {} from '@deepseek-ai/dsh-session-projection'
+// Type-only: the stop boundary this service measures at.
+import type {} from '@deepseek-ai/dsh-agent'
 import type {
+  ContextMeasured,
   TokenMeasurement,
   TokenMeasurementBaseline,
   TokenMeterConfig,
@@ -46,6 +49,23 @@ function usageTokens(usage: TokenUsage): number {
     + (usage.cacheReadTokens ?? 0)
     + (usage.cacheWriteTokens ?? 0)
     + usage.outputTokens
+}
+
+/**
+ * The provider's count for a turn's final call, when it has one worth trusting.
+ *
+ * The last thing to enter the conversation, or the last step to begin, must be
+ * a model response of `turn` carrying usage: anything entering after it is
+ * uncounted, and a step that began and left no response is a call that failed,
+ * so the count before it is not this turn's final one. A count with no input
+ * is no count: some providers report zeros rather than nothing.
+ */
+function finalCallCount(events: readonly SessionEvent[], turn: number): number | undefined {
+  const last = events.findLast(event => event.type === 'step/start' || isSurfaceEvent(event))
+  if (last?.type !== 'assistant/message' || last.data.turn !== turn || last.data.usage === undefined) return undefined
+  const { usage } = last.data
+  const input = usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
+  return input > 0 ? usageTokens(usage) : undefined
 }
 
 /** Compare optional envelopes so a headerless estimate can track later surface deltas. */
@@ -95,6 +115,46 @@ export class TokenMeter extends Service {
     ctx.on('session/event', (session) => {
       if (this.states.has(session)) this._sync(session)
     })
+
+    // Every turn closes with its size on the log, failed turns included.
+    // Prepended so the figure is there before any other listener at the same
+    // boundary — a Stop hook judging whether the conversation has outgrown
+    // its model — goes looking for it.
+    ctx.on('agent/turn-stopping', ({ agent, turn }) => {
+      agent.session.append('context/measured', this.measureTurn(agent.session, turn))
+    }, true)
+  }
+
+  /**
+   * The conversation's size at a turn's close, labelled by where the figure
+   * came from.
+   *
+   * The provider's count stands only when it is for the turn's own final call:
+   * that call's input, cache reads and writes and output, with nothing added to
+   * the conversation since. A call the provider counted as zero input, a turn
+   * whose last call failed, or one that went on adding tool results is the
+   * meter's estimate instead — the last trusted count plus the price of what
+   * came after. A log that cannot be measured reports `none` rather than a
+   * guess.
+   * @param session - the conversation the turn ran in.
+   * @param turn - the turn being closed.
+   * @returns the measurement to record.
+   */
+  measureTurn(session: Session, turn: number): ContextMeasured {
+    const route = session.requestContext()
+    const model = route?.model ?? null
+    const window = route?.contextWindow ?? null
+    const counted = finalCallCount(session.events, turn)
+    if (counted !== undefined) return { turn, model, tokens: counted, kind: 'usage', window }
+    let measurement: TokenMeasurement
+    try {
+      measurement = this.measure(session)
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`token meter: could not measure turn ${turn}: ${String(error)}`)
+      return { turn, model, tokens: 0, kind: 'none', window }
+    }
+    const kind = measurement.baseline.kind === 'none' ? 'none' : 'estimated'
+    return { turn, model, tokens: measurement.totalTokens, kind, window }
   }
 
   /**

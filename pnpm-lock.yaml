@@ -768,12 +768,36 @@ importers:
       '@deepseek-ai/dsh-agent-default-model':
         specifier: workspace:^
         version: link:../../packages/core/agent-default-model
+      '@deepseek-ai/dsh-agent-loop':
+        specifier: workspace:^
+        version: link:../../packages/core/agent-loop
+      '@deepseek-ai/dsh-agent-loop-testkit':
+        specifier: workspace:^
+        version: link:../../packages/test-support/agent-loop-testkit
+      '@deepseek-ai/dsh-bash-local':
+        specifier: workspace:^
+        version: link:../../packages/shell/bash-local
+      '@deepseek-ai/dsh-goal':
+        specifier: workspace:^
+        version: link:../../packages/goal/goal
+      '@deepseek-ai/dsh-goal-round-driver':
+        specifier: workspace:^
+        version: link:../../packages/goal/goal-round-driver
+      '@deepseek-ai/dsh-hook-protocol':
+        specifier: workspace:^
+        version: link:../../packages/hooks/hook-protocol
+      '@deepseek-ai/dsh-hooks-claude-code':
+        specifier: workspace:^
+        version: link:../../packages/hooks/hooks-claude-code
       '@deepseek-ai/dsh-llm':
         specifier: workspace:^
         version: link:../../packages/llm/llm
       '@deepseek-ai/dsh-session':
         specifier: workspace:^
         version: link:../../packages/core/session
+      '@deepseek-ai/dsh-subprocess-local':
+        specifier: workspace:^
+        version: link:../../packages/subprocess/subprocess-local
 
   native/landlock-run:
     devDependencies:
@@ -4680,6 +4704,9 @@ importers:
       '@deepseek-ai/dsh-subprocess-local':
         specifier: workspace:^
         version: link:../../subprocess/subprocess-local
+      '@deepseek-ai/dsh-token-meter':
+        specifier: workspace:^
+        version: link:../../llm/token-meter
       '@deepseek-ai/dsh-tools':
         specifier: workspace:^
         version: link:../../core/tools
@@ -4729,6 +4756,9 @@ importers:
       '@deepseek-ai/dsh-subprocess-local':
         specifier: workspace:^
         version: link:../../subprocess/subprocess-local
+      '@deepseek-ai/dsh-token-meter':
+        specifier: workspace:^
+        version: link:../../llm/token-meter
       '@deepseek-ai/dsh-tools':
         specifier: workspace:^
         version: link:../../core/tools
@@ -5387,6 +5417,9 @@ importers:
       '@deepseek-ai/cordis':
         specifier: workspace:^
         version: link:../../../vendor/cordis
+      '@deepseek-ai/dsh-agent':
+        specifier: workspace:^
+        version: link:../../core/agent
       '@deepseek-ai/dsh-compaction':
         specifier: workspace:^
         version: link:../../compaction/compaction
@@ -10145,10 +10178,12 @@ packages:
 
   '@modelcontextprotocol/server-everything@2026.7.4':
     resolution: {integrity: sha512-ydMW/M6rk9tK23b+U38trsNLHhd5eF+ntiv2Vr+RPMDhbiKY/IKrZU25ukvSXVPUBvy7TxTPWpeV4KcYcXg72w==}
+    deprecated: 'Date-based versions are no longer published. This package has resumed semantic versioning at 1.0.0: install the latest version.'
     hasBin: true
 
   '@modelcontextprotocol/server-filesystem@2026.7.10':
     resolution: {integrity: sha512-Mmjg4anFBD5OzbPnGJOA0jPPN8645ERhQk38HQLpSenx1ox9bfdPkmAzUnNjeQtqQGFLtKe13J20RtLBmUKMZA==}
+    deprecated: 'Date-based versions are no longer published. This package has resumed semantic versioning at 1.0.0: install the latest version.'
     hasBin: true
 
   '@napi-rs/wasm-runtime@1.1.5':

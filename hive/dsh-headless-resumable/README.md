@@ -29,11 +29,15 @@ was a surface exposing them. This is that surface, and nothing else.
   conversation that is not there, it refuses instead of creating one: creating
   one would answer in a conversation with no history and leave the one that was
   meant untouched and unfindable.
-- **Compaction as base configures it.** A build driven over forty rounds runs
-  past its context window long before the goal completes, so the summarizer
-  stays on: a run that dies at the ceiling measures the ceiling, not the model.
-  It summarizes with the conversation's own model, so no second route and no
-  second credential is involved.
+- **No compaction.** The hive rotates a conversation that has outgrown its
+  model onto a fresh one carrying a summary, deciding when from the size each
+  turn reports, so the harness never shrinks a conversation underneath it. A
+  turn that hits the ceiling anyway reports `CONTEXT_WINDOW_EXCEEDED`.
+- **A goal run stops when the hive says rotate.** Every goal round ends at the
+  Stop hook like any other turn. A Stop hook printing `{"rotate": true}` ends
+  the run after that round with `outcome: rotation_needed` and
+  `goal: {objective, roundsLeft}`, and the hive carries the goal onto the fresh
+  conversation. The harness never rotates by itself.
 
 ## Where it lives
 

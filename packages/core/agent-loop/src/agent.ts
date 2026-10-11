@@ -259,6 +259,9 @@ export class ReactLoopAgent implements Agent {
     phase.turn = turn
     let turnEnds: TurnEndReason | null = null
     let target: InboxTarget = 'next-turn'
+    // Set while the stop boundary itself is running, so a failure thrown out of
+    // it does not run the same boundary a second time for the same close.
+    let stopping = false
     try {
       while (true) {
         signal.throwIfAborted()
@@ -293,7 +296,9 @@ export class ReactLoopAgent implements Agent {
         }
         signal.throwIfAborted()
         if (turnEnds && this.inbox.nextStep.length === 0) {
+          stopping = true
           await this.dispatch.serial('agent/turn-stopping', { turn, signal })
+          stopping = false
           signal.throwIfAborted()
         }
         if (turnEnds && this.inbox.nextStep.length === 0) break
@@ -306,11 +311,21 @@ export class ReactLoopAgent implements Agent {
       }
       // Every failure is structured: an `LlmError` keeps its facts, anything
       // else flattens to `errorChain` text under the `UNKNOWN` code.
-      turnEnds = {
-        kind: 'error',
-        error: error instanceof LlmError
-          ? error.failure
-          : { message: errorChain(error), code: 'UNKNOWN' },
+      const failure = error instanceof LlmError
+        ? error.failure
+        : { message: errorChain(error), code: 'UNKNOWN' }
+      turnEnds = { kind: 'error', error: failure }
+      // The stop boundary still runs on a failed turn: a listener measuring
+      // the conversation or judging it too big for its model has the most to
+      // say about the turn that hit the ceiling. The turn closes regardless,
+      // and a listener that fails here cannot replace the failure being
+      // reported.
+      if (!stopping) {
+        try {
+          await this.dispatch.serial('agent/turn-stopping', { turn, signal, failure })
+        } catch (_listenerError: unknown) {
+          // The turn's own failure is the one reported below.
+        }
       }
       this.throwError(error)
     } finally {

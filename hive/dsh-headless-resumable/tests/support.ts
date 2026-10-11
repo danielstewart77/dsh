@@ -65,6 +65,10 @@ export function drivingGoals(objective: string, cap: number, completeAfterRounds
     create: () => goal as never,
     resume: () => goal as never,
     edit: (_a, ref) => ref,
+    disarm: () => {
+      goal = { ...goal, activation: 'disarmed' }
+      return goal
+    },
   }
 }
 

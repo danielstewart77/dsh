@@ -36,6 +36,12 @@ declare module '@deepseek-ai/dsh-session/types' {
       exitCode?: number
       stderrSummary?: string
       durationMs: number
+      /**
+       * Present when the hook asked for the conversation to be rotated
+       * (top-level `"rotate": true`). Only a Stop hook's request is acted on,
+       * and only by a surface driving a goal; see {@link HookOutput.rotate}.
+       */
+      rotate?: true
     }
   }
 }
@@ -128,6 +134,15 @@ export interface HookOutput {
   additionalContext?: string
   /** A warning surfaced to the user (CC `systemMessage`). */
   systemMessage?: string
+  /**
+   * `true` when a hook's clean-exit JSON carries top-level `"rotate": true`:
+   * the conversation has outgrown its model and should continue on a fresh
+   * one. This harness's own field, with no Claude Code or Codex counterpart —
+   * both ignore an unknown key, so one hook script can serve every harness. The
+   * harness never rotates by itself; it records the request and a surface
+   * driving a goal ends the run so whoever owns the conversation can.
+   */
+  rotate?: boolean
   /**
    * A tool-input rewrite a hook requested (CC `updatedInput`). PARSED but NOT
    * honored — input rewrite is deferred (see the interception extension-points Agent Note); a

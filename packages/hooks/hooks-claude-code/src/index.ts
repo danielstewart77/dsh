@@ -14,10 +14,12 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { ContentBlock, MessageSource } from '@deepseek-ai/dsh-llm'
-import type { UserMessage } from '@deepseek-ai/dsh-session'
+import type { ContentBlock, LlmFailure, MessageSource } from '@deepseek-ai/dsh-llm'
+import type { SessionEvent, UserMessage } from '@deepseek-ai/dsh-session'
 import type {} from '@deepseek-ai/dsh-session-persistence'
 import type {} from '@deepseek-ai/dsh-jobs'
+// Type-only: the `context/measured` event a Stop payload reports.
+import type {} from '@deepseek-ai/dsh-token-meter'
 import type { PostToolDecision, PreToolDecision, ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import {
   appendHookInvoked,
@@ -266,11 +268,13 @@ export function apply(ctx: Context, config: Config): void {
   })
 
   // A blocking Stop hook steers at the stopping boundary, which makes the
-  // machine observe pending input and run another step.
+  // machine observe pending input and run another step. A failed turn runs
+  // its Stop hooks too, but closes whatever they decide: there is no step to
+  // continue.
   // TODO(stop-loop-guard): cap consecutive forced continuations; hooks must self-limit meanwhile.
-  ctx.on('agent/turn-stopping', async ({ agent, turn, signal }): Promise<void> => {
-    const merged = await runPoint('Stop', '', stopPayload(ctx, agent), { agent, turn, signal })
-    if (merged.decision === 'deny') {
+  ctx.on('agent/turn-stopping', async ({ agent, turn, signal, failure }): Promise<void> => {
+    const merged = await runPoint('Stop', '', stopPayload(ctx, agent, turn, failure), { agent, turn, signal })
+    if (merged.decision === 'deny' && failure === undefined) {
       // A blocking Stop hook forces continuation.
       const text = merged.reason ?? 'continue: blocked by Stop hook'
       agent.steer(createUserMessage({ content: [{ type: 'text', text }], source: PLUGIN_SOURCE }))
@@ -388,8 +392,34 @@ function backgroundTasks(ctx: Context, agent: Agent | undefined): Array<Record<s
   }))
 }
 
-function stopPayload(ctx: Context, agent: Agent): Record<string, unknown> {
-  return { ...base(ctx, agent, 'Stop'), stop_hook_active: false, background_tasks: backgroundTasks(ctx, agent) }
+/**
+ * Build a Stop payload: Claude Code's fields, plus this harness's own.
+ *
+ * `context` is the conversation's size at this turn's close, as the token meter
+ * recorded it (`model`, `tokens`, `kind`, `window`) — absent when no meter is
+ * mounted. `stop_reason: "error"` and `error_code` mark a turn that failed,
+ * which still reaches its Stop hooks, because the turn that hit the model's
+ * ceiling is the one a rotation check most needs to see.
+ */
+function stopPayload(ctx: Context, agent: Agent, turn: number, failure: LlmFailure | undefined): Record<string, unknown> {
+  const context = turnContext(agent, turn)
+  return {
+    ...base(ctx, agent, 'Stop'),
+    stop_hook_active: false,
+    background_tasks: backgroundTasks(ctx, agent),
+    ...context === undefined ? {} : { context },
+    ...failure === undefined ? {} : { stop_reason: 'error', error_code: failure.code },
+  }
+}
+
+/** The size the token meter recorded at this turn's close, in the fields a hook reads. */
+function turnContext(agent: Agent, turn: number): Record<string, unknown> | undefined {
+  const measured = agent.session.events.findLast(
+    (event): event is SessionEvent<'context/measured'> => event.type === 'context/measured' && event.data.turn === turn,
+  )
+  if (measured === undefined) return undefined
+  const { model, tokens, kind, window } = measured.data
+  return { model, tokens, kind, window }
 }
 /**
  * Build a SubagentStart/SubagentStop payload from the CC base (the child's

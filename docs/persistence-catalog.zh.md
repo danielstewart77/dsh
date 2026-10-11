@@ -92,7 +92,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 }[T]
 ```
 
-来源：[`packages/core/session/src/types.ts:336`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:343`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:372`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:404`](../packages/core/session/src/types.ts)
+来源：[`packages/core/session/src/types.ts:339`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:346`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:375`](../packages/core/session/src/types.ts) · [`packages/core/session/src/types.ts:407`](../packages/core/session/src/types.ts)
 
 ## 事件
 
@@ -391,6 +391,22 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 来源：[`packages/compaction/compaction/src/types.ts:33`](../packages/compaction/compaction/src/types.ts)
 
+### `context/*`
+
+<a id="contextmeasured--log-only"></a>
+
+#### `context/measured` — log-only
+
+```ts persistence-catalog
+/**
+ * Log-only: the conversation's size at a turn's stop boundary — including
+ * a turn that failed. Not a surface event; it never reaches a model.
+ */
+'context/measured': ContextMeasured
+```
+
+来源：[`packages/llm/token-meter/src/types.ts:80`](../packages/llm/token-meter/src/types.ts)
+
 ### `feedback/*`
 
 <a id="feedbackrecord--log-only"></a>
@@ -467,6 +483,12 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
   exitCode?: number
   stderrSummary?: string
   durationMs: number
+  /**
+   * Present when the hook asked for the conversation to be rotated
+   * (top-level `"rotate": true`). Only a Stop hook's request is acted on,
+   * and only by a surface driving a goal; see {@link HookOutput.rotate}.
+   */
+  rotate?: true
 }
 ```
 
@@ -545,7 +567,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 'request/context': RequestContext
 ```
 
-来源：[`packages/core/session/src/types.ts:309`](../packages/core/session/src/types.ts)
+来源：[`packages/core/session/src/types.ts:312`](../packages/core/session/src/types.ts)
 
 <a id="requestheader--log-only"></a>
 
@@ -559,7 +581,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 'request/header': { header: EpochHeader; reason: RequestHeaderReason }
 ```
 
-来源：[`packages/core/session/src/types.ts:304`](../packages/core/session/src/types.ts)
+来源：[`packages/core/session/src/types.ts:307`](../packages/core/session/src/types.ts)
 
 ### `sandbox/*`
 
@@ -634,7 +656,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 'session/end-seed': Record<string, never>
 ```
 
-来源：[`packages/core/session/src/types.ts:332`](../packages/core/session/src/types.ts)
+来源：[`packages/core/session/src/types.ts:335`](../packages/core/session/src/types.ts)
 
 <a id="sessiontitle--log-only"></a>
 
@@ -721,7 +743,7 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
 
 类型：[TodoItem](subsystems/session.md)
 
-来源：[`packages/core/session/src/types.ts:299`](../packages/core/session/src/types.ts)
+来源：[`packages/core/session/src/types.ts:302`](../packages/core/session/src/types.ts)
 
 ### `tool/*`
 
@@ -810,7 +832,10 @@ export type SessionEvent<T extends SessionEventType = SessionEventType> = {
   turn: number
   step: number
   message: ToolResultMessage
-  error?: { name: string; code: string }
+  // `message` is what the failure actually said, which is usually the whole
+  // fix: "`file_text` is required for command: create" names the gap, where
+  // INVALID_ARGS alone sends a reader to the session log to find out.
+  error?: { name: string; code: string; message?: string }
   meta?: JsonValue
 }
 ```
