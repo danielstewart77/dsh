@@ -45,7 +45,7 @@
   },
   "license": "MIT",
   "dependencies": {
-    "@tanstack/react-virtual": "^3.14.9",
+    "@tanstack/react-virtual": "^3.14.10",
     "diff": "^9.0.0"
   },
   "peerDependencies": {
